@@ -20,7 +20,8 @@
     padding:8px 14px;cursor:pointer;letter-spacing:1px;border-radius:8px}
   button:hover{background:#2e2358}
   button.ghost{border-color:#4a3f6e;color:#9a8fc0}
-  #status{font-size:12px;color:#9a8fc0}
+  #status{font-size:12px;color:#9a8fc0;display:inline-block;min-height:1.4em}
+  canvas{display:block}
 </style>
 </head>
 <body>
@@ -29,13 +30,14 @@
   <div class="bar">
     <button id="bPlay">▶ play</button>
     <button id="bStep">step</button>
+    <button id="bTurbo">⚡ turbo 200</button>
     <button id="bReset" class="ghost">reset</button>
     <button id="bSave" class="ghost">save brain</button>
     <button id="bScratch" class="ghost">from scratch</button>
     <span id="status">connecting…</span>
   </div>
   <div class="bar" style="font-size:12px;color:#9a8fc0">
-    SPACE play · N step · M manual (click two adjacent candies) · R reset · S save brain
+    SPACE play · N step · M manual (click two adjacent candies) · R reset · S save brain · F speed · ⚡ turbo trains 200 episodes live
   </div>
 </div>
 <script src="/app.js"></script>

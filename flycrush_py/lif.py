@@ -113,12 +113,14 @@ def step_network(net: Net, vec: np.ndarray, pam_drive: float = 0.0) -> int:
             return 0
         net.spikes[:] = 0
         dim = len(vec) if vec is not None else 0
+        # Total current: sensory (optic) + synaptic + PAM modulatory, then ONE
+        # uniform integrate below. (Old code drove optic first and decayed it
+        # 83% in the same step's leak pass — nothing ever spiked.)
+        cur = np.zeros(n)
         if len(net.optic) and dim:
             idx = net.optic
             s = np.array([vec[k % dim] for k in range(len(idx))], dtype=np.float64)
-            active = net.ref[idx] <= 0
-            net.v[idx[active]] += (DT_MS / net.tau[idx[active]]) * (_SENSORY_GAIN * s[active] - net.v[idx[active]])
-        cur = np.zeros(n)
+            cur[idx] += _SENSORY_GAIN * s
         if len(net.pre):
             fired = net.prev_spike[net.pre]
             if fired.any():

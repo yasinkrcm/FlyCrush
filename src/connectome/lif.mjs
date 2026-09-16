@@ -98,16 +98,17 @@ export function stepNetwork(net, inputVec, pamDrive = 0) {
   try {
     const { n, v, ref, spikes, rate, tau, thr, head, nxt, to, w } = net;
     spikes.fill(0);
-    // 1) optic drive from sensory vector (round-robin over optic pool)
     const dim = inputVec?.length ?? 0;
+    // Total current: sensory (optic) + synaptic + PAM, then ONE uniform
+    // integrate below. (Old code drove optic first and decayed it 83% in
+    // the same step's leak pass — nothing ever spiked. Fixed in parity
+    // with flycrush_py/lif.py.)
+    const I = new Float32Array(n);
     for (let k = 0; k < net.optic.length; k++) {
       const i = net.optic[k];
       const s = dim ? (inputVec[k % dim] ?? 0) : 0;
-      if (ref[i] <= 0) v[i] += (DT_MS / tau[i]) * (SENSORY_GAIN * s - v[i]);
+      I[i] += SENSORY_GAIN * s;
     }
-    // 2) synaptic propagation from neurons that fired LAST step is folded
-    //    into the integrate below via direct current accumulation.
-    const I = new Float32Array(n);
     if (head) {
       for (let i = 0; i < n; i++) {
         if (!net._prevSpike?.[i]) continue;
@@ -116,7 +117,7 @@ export function stepNetwork(net, inputVec, pamDrive = 0) {
     }
     // 3) PAM modulatory drive (reward pulses land here)
     for (const i of net.pamIds) I[i] += pamDrive;
-    // 4) integrate all non-optic neurons + leak optic
+    // 4) uniform integrate + leak
     for (let i = 0; i < n; i++) {
       if (ref[i] > 0) { ref[i] -= 1; continue; }
       let vv = v[i] + (DT_MS / tau[i]) * (I[i] - v[i]);

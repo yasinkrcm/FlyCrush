@@ -98,6 +98,19 @@ class TestLif(unittest.TestCase):
         self.assertTrue(((net.v >= -2) & (net.v <= 4)).all())
         self.assertGreaterEqual(net.pam_hz, 0.0)
 
+    def test_network_actually_spikes(self):
+        # regression: a double-applied leak once silenced the whole net
+        net = L.create_network(self.doc)
+        eye = S.Eye()
+        total = 0
+        for i in range(10):
+            v, _ = eye.observe(B.create_board(2000 + i))
+            for _ in range(4):
+                total += L.step_network(net, v, 0.0)
+        self.assertGreater(total, 0, "healthy network must fire spikes")
+        d = L.decode_motor(net)
+        self.assertGreater(sum(d["col_acts"]) + sum(d["row_acts"]), 0.0)
+
     def test_decode_ranges(self):
         net = L.create_network(self.doc)
         eye = S.Eye()

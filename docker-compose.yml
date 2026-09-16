@@ -1,0 +1,53 @@
+# FLYCRUSH full stack: postgres + python backend serving the React UI.
+# Local dev (venv, hot files):  docker compose up -d          (postgres only)
+# Server deploy (everything):   docker compose --profile full up --build -d
+#   -> http://SERVER:8000/   (DB volume: ./data/postgres, weights: ./public)
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: flycrush-postgres
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fly}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flypw}
+      POSTGRES_DB: ${POSTGRES_DB:-flycrush}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fly} -d ${POSTGRES_DB:-flycrush}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  app:
+    profiles: ["full"]
+    build: .
+    container_name: flycrush-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-fly}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flypw}
+      POSTGRES_DB: ${POSTGRES_DB:-flycrush}
+      POSTGRES_PORT: "5432"
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    volumes:
+      # persist runtime weight saves + baked data on the host
+      - ./public:/app/public
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/state', timeout=4)\""]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

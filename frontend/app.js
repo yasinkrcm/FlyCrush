@@ -20,11 +20,13 @@ let board = null;
 let subset = null, cloudPts = [], idxPos = [], idxGroup = {};
 let report = {};
 let phase = 'idle', phaseT = 0, pending = null, pendingFinal = null, steps = [], stepIdx = 0;
+let busy = false; // in-flight request lock: overlapping async calls desync the animation
 let falls = {}, pops = new Set(), matched = new Set();
 let floats = [], particles = [], sel = null;
+let rejectCells = [], rejectT = 99; // wrong-move ghost: stays visible ~1.6s
 let playing = false, manual = false, aimT = 0, overT = 0;
 let say = 'connecting…', happy = 0.5, sayT = 99;
-let lastT = 0;
+let lastT = 0, speedMul = 1;
 
 async function jget(u) {
   try {
@@ -70,45 +72,55 @@ function text(str, x, y, size, color) {
 }
 
 /* ---------- candies & fly (mirror of pygame shapes) ---------- */
+function fillShape(kind, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  if (kind === 'circle') ctx.arc(0, 0, r, 0, 7);
+  else if (kind === 'square') {
+    if (ctx.roundRect) ctx.roundRect(-r, -r, r * 2, r * 2, r / 3);
+    else ctx.rect(-r, -r, r * 2, r * 2);
+  } else if (kind === 'drop') {
+    ctx.arc(0, 2, Math.max(1, r - 1), 0, 7);
+    ctx.moveTo(-r + 4, 0); ctx.lineTo(r - 4, 0); ctx.lineTo(0, -r - 4); ctx.closePath();
+  } else {
+    const pts = [];
+    if (kind === 'diamond') pts.push([0, -r], [r, 0], [0, r], [-r, 0]);
+    else if (kind === 'hex') {
+      for (let i = 0; i < 6; i++) pts.push([r * Math.cos(Math.PI / 3 * i), r * Math.sin(Math.PI / 3 * i)]);
+    } else { // star
+      for (let i = 0; i < 10; i++) {
+        const rad = i % 2 ? r * 0.45 : r, a = -Math.PI / 2 + i * Math.PI / 5;
+        pts.push([rad * Math.cos(a), rad * Math.sin(a)]);
+      }
+    }
+    pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+    ctx.closePath();
+  }
+  ctx.fill();
+}
 function candy(cx, cy, r, kind, color, scale) {
-  r = Math.max(2, r * (scale || 1));
+  r = Math.max(3, r * (scale || 1));
   ctx.save();
   ctx.translate(cx, cy);
-  const dark = shade(color, -60), lite = shade(color, 70);
-  ctx.fillStyle = dark;
-  const poly = (pts) => { ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.closePath(); ctx.fill(); };
-  if (kind === 'circle') {
-    ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.fill();
-    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(0, 0, r - 2, 0, 7); ctx.fill();
-  } else if (kind === 'square') {
-    rr(-r, -r, r * 2, r * 2, r / 3, dark);
-    rr(-r + 2, -r + 2, r * 2 - 4, r * 2 - 4, r / 3, color);
-  } else if (kind === 'diamond') {
-    poly([[0, -r], [r, 0], [0, r], [-r, 0]]);
-    ctx.fillStyle = color;
-    const k = 0.85;
-    poly([[0, -r * k], [r * k, 0], [0, r * k], [-r * k, 0]]);
-  } else if (kind === 'hex') {
-    const p = []; for (let i = 0; i < 6; i++) p.push([r * Math.cos(Math.PI / 3 * i), r * Math.sin(Math.PI / 3 * i)]);
-    poly(p);
-    ctx.fillStyle = color;
-    poly(p.map(([x, y]) => [x * 0.85, y * 0.85]));
-  } else if (kind === 'star') {
-    const p = [];
-    for (let i = 0; i < 10; i++) {
-      const rad = i % 2 ? r * 0.45 : r, a = -Math.PI / 2 + i * Math.PI / 5;
-      p.push([rad * Math.cos(a), rad * Math.sin(a)]);
-    }
-    poly(p);
-    ctx.fillStyle = color;
-    poly(p.map(([x, y]) => [x * 0.85, y * 0.85]));
-  } else {
-    ctx.beginPath(); ctx.arc(0, 2, r - 1, 0, 7); ctx.fill();
-    ctx.fillStyle = color; ctx.beginPath(); ctx.arc(0, 2, r - 3, 0, 7); ctx.fill();
-    poly([[-r + 4, 0], [r - 4, 0], [0, -r - 4]]);
+  // drop shadow
+  ctx.fillStyle = 'rgba(20,8,30,0.35)';
+  ctx.beginPath(); ctx.ellipse(0, r * 0.85, r * 0.75, r * 0.26, 0, 0, 7); ctx.fill();
+  // jelly body: dark edge -> base -> top-light core
+  fillShape(kind, r, shade(color, -70));
+  ctx.save(); ctx.translate(0, -1); fillShape(kind, r * 0.86, color); ctx.restore();
+  ctx.save(); ctx.translate(-r * 0.06, -r * 0.16); ctx.globalAlpha = 0.85; fillShape(kind, r * 0.62, shade(color, 80)); ctx.restore();
+  // bottom bounce shade (skip star: concave notch)
+  if (kind !== 'star') {
+    ctx.save(); ctx.globalAlpha = 0.45;
+    ctx.fillStyle = shade(color, -70);
+    ctx.beginPath(); ctx.ellipse(0, r * 0.45, r * 0.5, r * 0.27, 0, 0, 7); ctx.fill();
+    ctx.restore();
   }
-  ctx.fillStyle = lite; ctx.globalAlpha = 0.8;
-  ctx.beginPath(); ctx.ellipse(-r * 0.2, -r * 0.4, r * 0.35, r * 0.21, 0, 0, 7); ctx.fill();
+  // specular dots
+  ctx.fillStyle = 'rgba(255,255,255,0.92)';
+  ctx.beginPath(); ctx.arc(-r * 0.18, -r * 0.24, Math.max(1, r * 0.15), 0, 7); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,0.6)';
+  ctx.beginPath(); ctx.arc(-r * 0.30, -r * 0.05, Math.max(1, r * 0.07), 0, 7); ctx.fill();
   ctx.restore();
 }
 function fly(x, y, lx, ly, happy) {
@@ -213,9 +225,14 @@ function applyPub(p) {
   if (p.board) board = p.board;
 }
 async function flyStep() {
+  if (busy) return;
+  busy = true;
+  try {
   const res = await jpost('/api/fly_step', {});
   if (!res) { status('backend offline'); return; }
-  if (!res.ok) {
+  // NOTE: ok:false + reason:no-match is a NORMAL wrong move (animate it!),
+  // only game-over / brain-error return early.
+  if (!res.ok && res.reason !== 'no-match') {
     if (res.reason === 'game-over') { S.over = true; }
     return;
   }
@@ -228,32 +245,67 @@ async function flyStep() {
   } else {
     pending = res.decision; steps = []; stepIdx = 0;
     if (res.reshuffled && pendingFinal) board = pendingFinal;
+    const r1 = Math.floor(pending.cell / 8), c1 = pending.cell % 8;
+    const d = DV[pending.dir] || [0, 0];
+    floats.push({ // explicit REJECTION mark: invalid can never look approved
+      x: BX + (2 * c1 + d[1]) / 2 * CELL + CELL / 2,
+      y: BY + (2 * r1 + d[0]) / 2 * CELL + CELL / 2,
+      txt: '×', t: 0, big: true, col: '#ff5f5f',
+    });
+    rejectCells = [[r1, c1], [r1 + d[0], c1 + d[1]]]; rejectT = 0;
     say = 'Hmm… no match'; happy = 0.1; sayT = 0;
-    phase = 'swapback'; phaseT = 0;
+    phase = 'aim'; phaseT = 0; // show the attempt first, then slide back
   }
   if (res.reshuffled) { say = 'no moves — shuffled!'; happy = 0.3; sayT = 0; }
   if (res.over) { S.over = true; overT = 0; say = `game over · ${res.score} pts`; happy = 0.5; sayT = 0; }
+  } finally { busy = false; }
 }
 async function humanMove(cell, dir) {
+  if (busy || phase !== 'idle') return;
+  busy = true;
+  try {
   const res = await jpost('/api/human_move', { cell, dir });
   if (!res) { status('backend offline'); return; }
-  if (!res.ok) return;
+  if (!res.ok && res.reason !== 'no-match') return;
   pendingFinal = res.board || null;
   delete res.board;
   applyPub(res);
   if (res.valid) {
+    localSwap(cell, dir);
     pending = { cell, dir }; steps = res.steps || []; stepIdx = 0;
     phase = 'swap'; phaseT = 0;
   } else {
     pending = { cell, dir };
     if (res.reshuffled && pendingFinal) board = pendingFinal;
+    const d0 = DV[dir] || [0, 0];
+    const hr = Math.floor(cell / 8), hc = cell % 8;
+    floats.push({
+      x: BX + (2 * hc + d0[1]) / 2 * CELL + CELL / 2,
+      y: BY + (2 * hr + d0[0]) / 2 * CELL + CELL / 2,
+      txt: '×', t: 0, big: true, col: '#ff5f5f',
+    });
+    rejectCells = [[hr, hc], [hr + d0[0], hc + d0[1]]]; rejectT = 0;
     say = 'Hmm… no match'; happy = 0.1; sayT = 0;
     phase = 'swapback'; phaseT = 0;
   }
   if (res.reshuffled) { say = 'no moves — shuffled!'; sayT = 0; }
   if (res.over) { S.over = true; overT = 0; }
+  } finally { busy = false; }
 }
 function status(t) { try { statusEl.textContent = t; } catch {} }
+
+/** Mirror the swap locally so flash/pop/fall animate on the POST-SWAP
+    board — the backend reports matches against it. */
+function localSwap(cell, dir) {
+  try {
+    if (!board) return;
+    const r1 = Math.floor(cell / 8), c1 = cell % 8;
+    const d = DV[dir] || [0, 0];
+    const r2 = r1 + d[0], c2 = c1 + d[1];
+    if (r2 < 0 || r2 > 7 || c2 < 0 || c2 > 7) return;
+    const t = board[r1][c1]; board[r1][c1] = board[r2][c2]; board[r2][c2] = t;
+  } catch { /* never */ }
+}
 
 /* ---------- per-frame ---------- */
 function frame(t) {
@@ -262,6 +314,7 @@ function frame(t) {
     if (!lastT) lastT = t;
     let dt = (t - lastT) / 1000; lastT = t;
     if (!(dt >= 0) || dt > 0.25) dt = 0.025;
+    dt *= speedMul; // F key: 1x/2x/4x watch speed (animations only, brain unaffected)
     sayT += dt;
     if (S) S.dopa = Math.max(0, (S.dopa || 0) - dt * 26);
     for (const f of floats) { f.t += dt; f.y -= dt * 40; }
@@ -276,12 +329,15 @@ function frame(t) {
       }
     } else if (phase === 'aim') {
       phaseT += dt;
-      if (phaseT > 0.6) { phase = 'swap'; phaseT = 0; }
+      if (phaseT > 0.6) {
+        if (pending && steps.length > 0) localSwap(pending.cell, pending.dir);
+        phase = 'swap'; phaseT = 0;
+      }
     } else if (phase === 'swap') {
       phaseT += dt;
       if (phaseT > 0.22) {
         if (steps.length) { stepIdx = 0; phase = 'flash'; phaseT = 0; matched = new Set(steps[0].matched.map(([r, c]) => r * 8 + c)); }
-        else { phase = 'idle'; phaseT = 0; }
+        else { phase = 'swapback'; phaseT = 0; } // invalid attempt slides back
       }
     } else if (phase === 'flash') {
       phaseT += dt;
@@ -325,8 +381,10 @@ function frame(t) {
       }
     } else if (phase === 'swapback') {
       phaseT += dt;
-      if (phaseT > 0.25) { phase = 'idle'; phaseT = 0; }
+      if (phaseT > 0.6) { phase = 'idle'; phaseT = 0; } // slow, visible rejection slide
     }
+    rejectT += dt;
+    if (rejectT > 1.6) rejectCells = [];
     if (S && S.over) {
       overT += dt;
       if (overT > 3 && phase === 'idle') { overT = 0; newGame(false); }
@@ -336,6 +394,9 @@ function frame(t) {
 }
 
 async function newGame(fromScratch) {
+  if (busy) return;
+  busy = true;
+  try {
   const res = await jpost('/api/new_game', fromScratch ? { from_scratch: true } : {});
   if (!res) { status('backend offline'); return; }
   applyPub(res);
@@ -343,8 +404,14 @@ async function newGame(fromScratch) {
   phase = 'idle'; phaseT = 0; steps = []; falls = {}; matched = new Set();
   say = fromScratch ? 'blank brain — learning live' : 'new grid — brain keeps learning';
   happy = 0.8; sayT = 0;
-  status(`brain: ${S.prov} · updates ${S.updates}`);
+  status(`brain: ${S.prov} · updates ${S.updates} · saved@${S.saved || 0} (postgres, auto)`);
+  } finally { busy = false; }
 }
+// buttons must not keep focus: SPACE would retrigger them + scroll the page
+try {
+  document.querySelectorAll('button').forEach((b) =>
+    b.addEventListener('click', (e) => { try { e.currentTarget.blur(); } catch {} }));
+} catch {}
 
 /* ---------- render (mirrors game.py draw order) ---------- */
 function render(t) {
@@ -379,8 +446,11 @@ function drawBoard(t) {
     if ((phase === 'swap' || phase === 'swapback') && pending) {
       const pr = Math.floor(pending.cell / 8), pc = pending.cell % 8;
       const d = DV[pending.dir] || [0, 0];
-      let k = Math.min(1, phaseT / 0.22);
-      if (phase === 'swapback') k = 1 - Math.min(1, phaseT / 0.25);
+      // board pre-swapped for valid: settle into place; invalid animates on live board
+      let k;
+      if (phase === 'swapback') k = 1 - Math.min(1, phaseT / 0.6);
+      else if (steps.length > 0) k = 1 - Math.min(1, phaseT / 0.22);
+      else k = Math.min(1, phaseT / 0.22);
       if (r === pr && c === pc) { ox = d[1] * CELL * k; oy = d[0] * CELL * k; }
       else if (r === pr + d[0] && c === pc + d[1]) { ox = -d[1] * CELL * k; oy = -d[0] * CELL * k; }
     }
@@ -394,6 +464,14 @@ function drawBoard(t) {
     if (sel && sel[0] === r && sel[1] === c) {
       ctx.strokeStyle = '#56d8ff'; ctx.lineWidth = 3;
       ctx.strokeRect(BX + c * CELL + 2, BY + r * CELL + 2, CELL - 4, CELL - 4);
+    }
+    if (phase === 'swapback' && pending) {
+      const pr = Math.floor(pending.cell / 8), pc = pending.cell % 8;
+      const d = DV[pending.dir] || [0, 0];
+      if ((r === pr && c === pc) || (r === pr + d[0] && c === pc + d[1])) {
+        ctx.strokeStyle = '#ff5f5f'; ctx.lineWidth = 3;
+        ctx.strokeRect(BX + c * CELL + 2, BY + r * CELL + 2, CELL - 4, CELL - 4);
+      }
     }
     const cx = BX + c * CELL + CELL / 2 + ox, cy = BY + r * CELL + CELL / 2 + oy;
     const cd = CANDY[v] || CANDY[0];
@@ -419,9 +497,9 @@ function drawBoard(t) {
       ctx.stroke();
     }
   }
-  ctx.fillStyle = '#fff';
-  ctx.font = '20px ui-monospace,monospace';
   for (const f of floats) {
+    ctx.fillStyle = f.col || '#fff';
+    ctx.font = '20px ui-monospace,monospace';
     ctx.globalAlpha = Math.max(0, 1 - f.t / 1.2);
     ctx.fillText(f.txt, f.x - 20, f.y - 20);
   }
@@ -475,12 +553,15 @@ function drawRight(t) {
   }
   const recent = (S && S.hist || []).slice(-50);
   const avg = recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : 0;
-  text(`LEARNING · eps ${S ? S.eps : 0} · updates ${S ? S.updates : 0} · avg50 ${avg >= 0 ? '+' : ''}${avg.toFixed(2)}`, x0, yy + 16, 14, '#968aaa');
+  text(`LEARN e${S ? S.eps : 0} u${S ? S.updates : 0} ${avg >= 0 ? '+' : ''}${avg.toFixed(2)} sv@${(S && S.saved) || 0}`, x0, yy + 16, 14, '#968aaa');
   yy += 22;
   rr(x0, yy, 424, 74, 8, '#0a0814');
-  const hist = (S && S.hist || []).slice(-220);
+  const jc = (S && S.job && S.job.curve) || [];
+  const useJob = jc.length > 1; // turbo score/episode curve when available, else per-move reward
+  const hist = useJob ? jc.slice(-120) : ((S && S.hist || []).slice(-220));
+  if (useJob) text('turbo · score / episode', x0 + 300, yy + 16, 12, '#7cff6b');
   if (hist.length > 1) {
-    const mx = Math.max(0.6, ...hist), mn = Math.min(-0.1, ...hist), span = (mx - mn) || 1;
+    const mx = Math.max(useJob ? 1 : 0.6, ...hist), mn = Math.min(useJob ? 0 : -0.1, ...hist), span = (mx - mn) || 1;
     ctx.strokeStyle = '#7cff6b'; ctx.lineWidth = 2; ctx.beginPath();
     hist.forEach((v, i) => {
       const x = x0 + 6 + i / (hist.length - 1) * 412;
@@ -488,13 +569,15 @@ function drawRight(t) {
       i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
     });
     ctx.stroke();
-    const by = yy + 74 - 6 - ((S.baseline || 0) - mn) / span * 62;
-    ctx.strokeStyle = '#ff5fd2'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(x0 + 6, by); ctx.lineTo(x0 + 418, by); ctx.stroke();
+    if (!useJob) {
+      const by = yy + 74 - 6 - ((S.baseline || 0) - mn) / span * 62;
+      ctx.strokeStyle = '#ff5fd2'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(x0 + 6, by); ctx.lineTo(x0 + 418, by); ctx.stroke();
+    }
   }
   yy += 82;
   text('SPACE play · N step · M manual', x0, yy + 16, 14, '#968aaa');
-  text('R reset · S save brain · Q quit', x0, yy + 36, 14, '#968aaa');
+  text(`R reset · S save · F speed ×${speedMul} · Q quit`, x0, yy + 36, 14, '#968aaa');
 }
 
 /* ---------- input ---------- */
@@ -522,6 +605,7 @@ document.addEventListener('keydown', async (e) => {
   try {
     if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
     else if (e.key === 'n' || e.key === 'N') { if (phase === 'idle' && !S.over) await flyStep(); }
+    else if (e.key === 'f' || e.key === 'F') { speedMul = speedMul >= 4 ? 1 : speedMul * 2; status(`izleme hızı ×${speedMul}`); }
     else if (e.key === 'm' || e.key === 'M') { manual = !manual; status(manual ? 'manual: click two adjacent candies' : 'fly resumes'); }
     else if (e.key === 'r' || e.key === 'R') { await newGame(false); }
     else if (e.key === 's' || e.key === 'S') {
@@ -535,6 +619,12 @@ function togglePlay() {
   try { document.getElementById('bPlay').textContent = playing ? '⏸ pause' : '▶ play'; } catch {}
 }
 document.getElementById('bPlay').onclick = togglePlay;
+document.getElementById('bTurbo').onclick = async () => {
+  const res = await jpost('/api/turbo', { episodes: 200 });
+  if (res && res.ok) status('TURBO başladı · 200 episode · ~1000 hamle/sn · eğri aşağıda canlanıyor');
+  else if (res && res.reason === 'already-running') status('TURBO zaten koşuyor');
+  else status('turbo failed');
+};
 document.getElementById('bStep').onclick = async () => { if (phase === 'idle' && S && !S.over) await flyStep(); };
 document.getElementById('bReset').onclick = async () => { await newGame(false); };
 document.getElementById('bSave').onclick = async () => {
@@ -555,10 +645,22 @@ async function boot() {
   if (!st) { status('backend offline — run: ./.venv/bin/python -m backend.server'); return; }
   applyPub(st);
   board = st.board;
-  status(`brain: ${S.prov} · updates ${S.updates} — press play`);
+  status(`brain: ${S.prov} · updates ${S.updates} · saved@${S.saved || 0} (postgres, auto) — press play`);
   requestAnimationFrame((t) => { lastT = t; frame(t); });
   setInterval(async () => { // gentle resync when idle (never mid-animation)
-    try { if (phase === 'idle') { const s2 = await jget('/api/state'); if (s2) applyPub(s2); } } catch {}
+    try {
+      if (phase === 'idle') {
+        const s2 = await jget('/api/state');
+        if (s2) {
+          applyPub(s2);
+          const j = s2.job;
+          if (j && j.running) status(`TURBO ${j.done}/${j.total} · avg ${j.avg} · eğri canlanıyor…`);
+          else if (s2.invalid && s2.invalid.count > 0) {
+            status(`brain: ${S.prov} · updates ${S.updates} · saved@${S.saved || 0} · rej${s2.invalid.count} (${Math.round((s2.invalid.rate || 0) * 100)}%)`);
+          }
+        }
+      }
+    } catch {}
   }, 2000);
 }
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);

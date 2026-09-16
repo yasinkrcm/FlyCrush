@@ -70,46 +70,62 @@ def _rr(surf, rect, color, radius=14, width=0):
         pygame.draw.rect(surf, color, rect, width)
 
 
-def draw_candy(surf, cx, cy, r, kind, color, scale=1.0, alpha=255):
-    r = max(2, int(r * scale))
-    s = pygame.Surface((r * 2 + 8, r * 2 + 8), pygame.SRCALPHA)
-    x = y = r + 4
-    dark = tuple(max(0, c - 60) for c in color)
-    lite = tuple(min(255, c + 70) for c in color)
-    pts = None
-    if kind == "circle":
-        pygame.draw.circle(s, dark, (x, y), r)
-        pygame.draw.circle(s, color, (x, y), r - 2)
-    elif kind == "square":
-        _rr(s, (x - r, y - r, r * 2, r * 2), dark, r // 3)
-        _rr(s, (x - r + 2, y - r + 2, r * 2 - 4, r * 2 - 4), color, r // 3)
-    elif kind == "diamond":
-        pts = [(x, y - r), (x + r, y), (x, y + r), (x - r, y)]
-        pygame.draw.polygon(s, dark, pts)
-        k = 0.85
-        pygame.draw.polygon(s, color, [(x, y - r * k), (x + r * k, y), (x, y + r * k), (x - r * k, y)])
-    elif kind == "hex":
-        pts = [(x + r * math.cos(math.pi / 3 * i), y + r * math.sin(math.pi / 3 * i)) for i in range(6)]
-        pygame.draw.polygon(s, dark, pts)
-        k = 0.85
-        pygame.draw.polygon(s, color, [(x + (px - x) * k, y + (py - y) * k) for px, py in pts])
-    elif kind == "star":
+def _poly_points(kind, x, y, r, k=1.0):
+    r *= k
+    if kind == "diamond":
+        return [(x, y - r), (x + r, y), (x, y + r), (x - r, y)]
+    if kind == "hex":
+        return [(x + r * math.cos(math.pi / 3 * i), y + r * math.sin(math.pi / 3 * i)) for i in range(6)]
+    if kind == "star":
         pts = []
         for i in range(10):
             rr = r if i % 2 == 0 else r * 0.45
             a = -math.pi / 2 + i * math.pi / 5
             pts.append((x + rr * math.cos(a), y + rr * math.sin(a)))
-        pygame.draw.polygon(s, dark, pts)
-        k = 0.85
-        pygame.draw.polygon(s, color, [(x + (px - x) * k, y + (py - y) * k) for px, py in pts])
-    else:  # drop
-        pygame.draw.circle(s, dark, (x, y + 2), r - 1)
-        pygame.draw.circle(s, color, (x, y + 2), r - 3)
+        return pts
+    return None
+
+
+def _draw_shape(s, kind, x, y, r, color):
+    """Filled candy silhouette at radius r."""
+    if kind == "circle":
+        pygame.draw.circle(s, color, (int(x), int(y)), max(1, int(r)))
+    elif kind == "square":
+        _rr(s, (x - r, y - r, r * 2, r * 2), color, max(2, int(r) // 3))
+    elif kind == "drop":
+        pygame.draw.circle(s, color, (int(x), int(y + 2)), max(1, int(r - 1)))
         pygame.draw.polygon(s, color, [(x - r + 4, y), (x + r - 4, y), (x, y - r - 4)])
-    pygame.draw.ellipse(s, (*lite, 200), (x - r * 0.55, y - r * 0.62, r * 0.7, r * 0.42))
+    else:
+        pts = _poly_points(kind, x, y, r)
+        if pts:
+            pygame.draw.polygon(s, color, pts)
+
+
+def draw_candy(surf, cx, cy, r, kind, color, scale=1.0, alpha=255):
+    """Jelly candy: shadow + dark edge + glossy body + specular dot."""
+    r = max(3, int(r * scale))
+    W = H = r * 2 + 12
+    s = pygame.Surface((W, H + 8), pygame.SRCALPHA)
+    x, y = W // 2, H // 2
+    dark = tuple(max(0, c - 70) for c in color)
+    lite = tuple(min(255, c + 80) for c in color)
+    # drop shadow (depth on the cream board)
+    pygame.draw.ellipse(s, (20, 8, 30, 90), (x - r * 0.75, y + r * 0.62, r * 1.5, r * 0.5))
+    # body: dark edge, base, top-light core
+    _draw_shape(s, kind, x, y, r, dark)
+    _draw_shape(s, kind, x, y - 1, r * 0.86, color)
+    _draw_shape(s, kind, x - r * 0.06, y - r * 0.16, r * 0.62, lite)
+    # bottom bounce shade (skip star: concave notch would poke out)
+    if kind != "star":
+        sh = pygame.Surface((W, H + 8), pygame.SRCALPHA)
+        pygame.draw.ellipse(sh, (*dark, 110), (x - r * 0.5, y + r * 0.18, r, r * 0.55))
+        s.blit(sh, (0, 0))
+    # specular dot: tight white pop near top-left
+    pygame.draw.circle(s, (255, 255, 255, 235), (int(x - r * 0.18), int(y - r * 0.24)), max(1, int(r * 0.15)))
+    pygame.draw.circle(s, (255, 255, 255, 160), (int(x - r * 0.30), int(y - r * 0.05)), max(1, int(r * 0.07)))
     if alpha < 255:
         s.set_alpha(alpha)
-    surf.blit(s, (cx - r - 4, cy - r - 4))
+    surf.blit(s, (cx - W // 2, cy - H // 2))
 
 
 def draw_fly(surf, x, y, look=(0, 0), happy=0.0):
@@ -129,8 +145,8 @@ def draw_fly(surf, x, y, look=(0, 0), happy=0.0):
 
 
 class Game:
-    def __init__(self, moves=25, speed=1.0):
-        self.moves, self.moves_left = moves, moves
+    def __init__(self, moves=None, speed=1.0, from_scratch=False):
+        self.moves, self.moves_left = moves, moves  # None = unlimited, never game-over
         self.score, self.combo, self.chain, self.best = 0, 1, 0, 0
         self.board = create_board(20260916)
         self.rng = Rng(99)
@@ -152,11 +168,15 @@ class Game:
         self.falls, self.pops, self._matched = {}, set(), set()
         self.cascade = 1
         self.particles = []
+        self.reject_cells, self.reject_t = set(), 99.0  # wrong-move ghost: stays visible
+        self.trail_cells, self.trail_t = set(), 99.0  # valid-move trail: every move visible
         self._cell, self._dir = -1, "up"
         # live learning state (updates every brain move, visible on screen)
         self.score_at_start = 0
         self.baseline, self.updates = 0.0, 0
         self.eps = EPS_START
+        self.saved_updates = 0  # last update count persisted (autosave, no key needed)
+        self.move_count, self.invalid_count = 0, 0
         self.hist = []
         self._last_step = None
         self.prov = "random-init"
@@ -170,18 +190,13 @@ class Game:
             self.idx_of = {n["id"]: i for i, n in enumerate(doc.get("neurons", []))} if ok else {}
         except Exception:
             self.net, self.cloud, self.dec_ids, self.idx_of = create_network({}), [], {}, {}
-        try:
-            ok, wdoc = load_json("readout-weights.json")
-            self.policy = create_policy(1337)
-            if ok:
-                import_weights(self.policy, wdoc)
-                self.prov = (wdoc.get("meta") or {}).get("trainedAt", "static-trained")
-                self.prov = "static-trained"
-            else:
-                self.prov = "random-init"
-        except Exception:
-            self.policy = create_policy(1337)
-            self.prov = "random-init"
+        from flycrush_py.db import AsyncDb, load_boot_policy, maybe_autosave  # noqa
+        self._adb = AsyncDb()
+        self.policy = create_policy(1337)
+        self.prov, db_upd = load_boot_policy(self.policy, import_weights, from_scratch)
+        self.updates = int(db_upd)
+        if from_scratch:
+            self.say("blank brain — learning live, S saves", happy=0.5)
         try:
             ok, rep = load_json("training-report.json")
             self.report = rep if ok else {}
@@ -211,9 +226,9 @@ class Game:
             return None
 
     def start_move(self, cell, direction):
-        """Commit a swap: decrement move, apply logically, slide. Resolver takes over."""
+        """Commit a swap: decrement move (if limited), apply logically, slide. Resolver takes over."""
         try:
-            if self.moves_left <= 0 or self.over or self.phase not in ("idle", "aim"):
+            if (self.moves_left is not None and self.moves_left <= 0) or self.over or self.phase not in ("idle", "aim"):
                 return False
             r1, c1 = divmod(cell, 8)
             d = _DV.get(direction)
@@ -224,11 +239,36 @@ class Game:
                 return False
             self.board[r1][c1], self.board[r2][c2] = self.board[r2][c2], self.board[r1][c1]
             self._cell, self._dir = cell, direction
-            self.moves_left -= 1
+            if self.moves_left is not None:
+                self.moves_left = max(0, self.moves_left - 1)
+            self.move_count += 1
             self.combo, self.cascade = 1, 1
             self.score_at_start = self.score
             self.phase, self.phase_t = "swap", 0.0
             return True
+        except Exception:
+            return False
+
+    def _check_end(self):
+        """Shared end-of-move bookkeeping for BOTH resolve paths."""
+        try:
+            if not find_valid_move(self.board):
+                self.board = reshuffle(self.board, 5)["board"]
+                self.say("no moves — shuffled!", happy=0.3)
+            if self.moves_left is not None and self.moves_left <= 0:
+                self.over, self.playing = True, False
+                self.say(f"game over · {self.score} pts", happy=0.5)
+                try:  # game over = natural checkpoint: persist, no key needed
+                    from flycrush_py.db import save_readout  # noqa
+                    recent = self.hist[-50:]
+                    self._adb.submit(save_readout, "live", self.policy, self.updates,
+                                     sum(recent) / len(recent) if recent else 0.0,
+                                     {"checkpoint": "game-over"})
+                    self.saved_updates = self.updates
+                except Exception:
+                    pass
+                return True
+            return False
         except Exception:
             return False
 
@@ -243,8 +283,18 @@ class Game:
                     self.board[r1][c1], self.board[r1 + d[0]][c1 + d[1]] = \
                         self.board[r1 + d[0]][c1 + d[1]], self.board[r1][c1]
                     self.combo, self.chain = 1, 0
-                    self.say("Hmm… no match", happy=0.1)
+                    self.invalid_count += 1
+                    # explicit REJECTION mark (red × at swap midpoint) so invalid
+                    # can never be mistaken for approval
+                    mx = BX + (2 * c1 + d[1]) / 2 * CELL + CELL / 2
+                    my = BY + (2 * r1 + d[0]) / 2 * CELL + CELL / 2
+                    self.floats.append({"x": mx, "y": my, "txt": "×", "t": 0.0,
+                                        "big": True, "col": (255, 95, 95)})
+                    self.reject_cells = {(r1, c1), (r1 + d[0], c1 + d[1])}
+                    self.reject_t = 0.0
                     self._learn_from_move()  # negative feedback: failed exploration still teaches
+                    if not self._check_end():
+                        self.say("Hmm… no match", happy=0.1)
                     self.phase, self.phase_t = "swapback", 0.0
                 else:
                     self._finish_move()
@@ -257,12 +307,19 @@ class Game:
             self.best = max(self.best, self.chain)
             spike = 90 if removed >= 5 else 60 if removed == 4 else 38
             self.dopa = min(120.0, self.dopa + spike)
-            self.say(f"{WORDS.get(min(self.cascade, 4), 'Sweet!')} +{pts}", happy=1.0)
+            self.say(f"{WORDS.get(min(self.cascade, 4), 'Sweet!')} +{pts}", happy=1.0) if False else self.say(f"{WORDS.get(min(self.cascade, 4), 'Sweet!')} +{pts}", happy=1.0)
             cr = sum(r for r, _ in m) / removed
             cc = sum(c for _, c in m) / removed
             self.floats.append({"x": BX + cc * CELL + CELL / 2, "y": BY + cr * CELL,
                                 "txt": f"+{pts}", "t": 0.0})
             self._matched = set(m)
+            try:  # green trail on the swapped pair: every valid move stays visible
+                r1, c1 = divmod(self._cell, 8)
+                d = _DV.get(self._dir, (0, 0))
+                self.trail_cells = {(r1, c1), (r1 + d[0], c1 + d[1])}
+                self.trail_t = 0.0
+            except Exception:
+                pass
             self.phase, self.phase_t = "flash", 0.0
         except Exception:
             self._finish_move()
@@ -322,17 +379,17 @@ class Game:
             if len(self.hist) > 600:
                 self.hist = self.hist[-600:]
             self.updates += 1
+            recent = self.hist[-50:]
+            from flycrush_py.db import maybe_autosave  # noqa
+            if maybe_autosave(self._adb, "live", self.policy, self.updates,
+                              sum(recent) / len(recent)):
+                self.saved_updates = self.updates
         except Exception:
             pass
 
     def _finish_move(self):
         self._learn_from_move()
-        if not find_valid_move(self.board):
-            self.board = reshuffle(self.board, 5)["board"]
-            self.say("no moves — shuffled!", happy=0.3)
-        if self.moves_left <= 0:
-            self.over, self.playing = True, False
-            self.say(f"game over · {self.score} pts", happy=0.5)
+        self._check_end()
         self.phase, self.phase_t = "idle", 0.0
 
     def reset_board(self):
@@ -348,6 +405,8 @@ class Game:
             self.phase, self.phase_t = "idle", 0.0
             self.aim_t, self._over_t = 0.0, 0.0
             self.falls, self.pops, self._matched = {}, set(), set()
+            self.reject_cells, self.reject_t = set(), 99.0
+            self.trail_cells, self.trail_t = set(), 99.0
             self.particles, self.floats = [], []
             self.eye.reset()
         except Exception:
@@ -361,8 +420,16 @@ class Game:
                                 "savedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()})
             with open(os.path.join(data_dir(), "readout-weights.json"), "w") as fh:
                 json.dump(doc, fh)
+            try:
+                from flycrush_py.db import save_readout  # noqa
+                recent = self.hist[-50:]
+                self._adb.submit(save_readout, "live", self.policy, self.updates,
+                                 sum(recent) / len(recent) if recent else 0.0,
+                                 {"manualSave": True})
+            except Exception:
+                pass
             self.prov = "live-trained(saved)"
-            self.say("brain saved — readout-weights.json", happy=1.0)
+            self.say("brain saved — json + postgres", happy=1.0)
         except Exception:
             self.say("save failed", happy=0.1)
 
@@ -386,7 +453,7 @@ class Game:
                     self.reset_board()
                     self.playing = True
                     self.say("new grid — brain keeps learning", happy=0.8)
-            elif self.playing and not self.manual:
+            elif self.playing and not self.manual and (self.moves_left is None or self.moves_left > 0) and not self.over:
                 self.aim_t += dt
                 if self.aim_t > 0.55:
                     self.aim_t = 0.0
@@ -398,7 +465,8 @@ class Game:
             self.phase_t += dt
             if self.phase_t > 0.6:
                 a = self.pending
-                self.start_move(a["cell"], a["dir"])
+                if not self.start_move(a["cell"], a["dir"]):
+                    self.phase, self.phase_t = "idle", 0.0  # recover, never stall
         elif self.phase == "swap":
             self.phase_t += dt
             if self.phase_t > 0.22:
@@ -421,8 +489,14 @@ class Game:
                 self._resolve_step(first=False)
         elif self.phase == "swapback":
             self.phase_t += dt
-            if self.phase_t > 0.25:
+            if self.phase_t > 0.6:  # slow, visible rejection slide
                 self.phase, self.phase_t = "idle", 0.0
+        self.reject_t += dt
+        if self.reject_t > 1.6:
+            self.reject_cells = set()
+        self.trail_t += dt
+        if self.trail_t > 1.4:
+            self.trail_cells = set()
         for p in self.particles:
             p["t"] += dt
             p["x"] += p["vx"] * dt
@@ -431,7 +505,8 @@ class Game:
         self.particles = [p for p in self.particles if p["t"] < p["life"]]
 
     # ---------------- drawing ----------------
-    def draw_board(self, s, font):
+    def draw_board(self, s, fonts):
+        f_med, f_big = fonts[1], fonts[0]
         _rr(s, (BX - 14, BY - 14, CELL * 8 + 28, CELL * 8 + 28), CREAM, 22)
         _rr(s, (BX - 14, BY - 14, CELL * 8 + 28, CELL * 8 + 28), (210, 140, 200), 22, 3)
         t = time.time()
@@ -445,9 +520,12 @@ class Game:
                         pc, pd = self._cell, self._dir
                         pr, pcc = divmod(pc, 8)
                         d = _DV[pd]
-                        k = min(1.0, self.phase_t / 0.22)
+                        # board is pre-swapped: slide settles INTO place;
+                        # swapback runs on the reverted board: out and back.
                         if self.phase == "swapback":
-                            k = 1.0 - min(1.0, self.phase_t / 0.25)
+                            k = 1.0 - min(1.0, self.phase_t / 0.6)
+                        else:
+                            k = 1.0 - min(1.0, self.phase_t / 0.22)
                         if (r, c) == (pr, pcc):
                             ox, oy = d[1] * CELL * k, d[0] * CELL * k
                         elif (r, c) == (pr + d[0], pcc + d[1]):
@@ -464,6 +542,21 @@ class Game:
                     sc = max(0.0, 1.0 - self.phase_t / 0.22)
                 if self.sel == (r, c):
                     pygame.draw.rect(s, (86, 216, 255), (cx - 30 + ox, cy - 30 + oy, 60, 60), 3, border_radius=12)
+                # rejected pair glows red while sliding back AND lingers as ghost
+                if self._cell >= 0 and (self.phase == "swapback" or
+                                        (self.reject_cells and self.reject_t < 1.6)):
+                    try:
+                        pr, pcc = divmod(self._cell, 8)
+                        d = _DV[self._dir]
+                        pair = {(pr, pcc), (pr + d[0], pcc + d[1])} if self.phase == "swapback" else set(self.reject_cells)
+                        if (r, c) in pair:
+                            pulse = 3 + int(2 * math.sin(time.time() * 9))
+                            pygame.draw.rect(s, (255, 95, 95), (cx - 30 + ox, cy - 30 + oy, 60, 60), pulse, border_radius=12)
+                    except Exception:
+                        pass
+                if self.trail_cells and self.trail_t < 1.4 and (r, c) in self.trail_cells:
+                    pulse = 2 + int(2 * math.sin(time.time() * 7 + 1))
+                    pygame.draw.rect(s, (124, 255, 107), (cx - 28 + ox, cy - 28 + oy, 56, 56), pulse, border_radius=12)
                 color, kind = CANDY[v]
                 draw_candy(s, cx + ox, cy + oy, 24, kind, color, sc)
         # fly aim ring + arrow
@@ -481,7 +574,8 @@ class Game:
                 pygame.draw.line(s, (124, 255, 107), (ex - d[0] * 12, ey - d[1] * 12),
                                  (ex - d[0] * 12 - 12 * math.cos(ang + da), ey - d[1] * 12 - 12 * math.sin(ang + da)), 4)
         for f in self.floats:
-            img = font.render(f["txt"], True, (255, 255, 255))
+            fnt = f_big if f.get("big") else f_med
+            img = fnt.render(f["txt"], True, f.get("col", (255, 255, 255)))
             img.set_alpha(max(0, 255 - int(f["t"] * 200)))
             s.blit(img, (f["x"] - 20, f["y"] - 20))
         for p in self.particles:
@@ -552,18 +646,22 @@ class Game:
         s.blit(f_big.render("FLYCRUSH", True, (255, 255, 255)), (BX, 18))
         s.blit(f_med.render("a fruit-fly connectome plays candy crush", True, (255, 220, 245)), (BX, 58))
         s.blit(f_med.render(f"REPLAY … chain {self.chain} · best {self.best}", True, (124, 255, 107)), (BX, 84))
-        self.draw_board(s, f_med)
+        self.draw_board(s, fonts)
         # right column
         _rr(s, (RX, 18, W - RX - 20, H - 36), (20, 16, 38, 235), 18)
         x0 = RX + 18
         # badges
-        for i, (k, v, col) in enumerate((("MOVES", str(self.moves_left), (86, 216, 255)),
+        for i, (k, v, col) in enumerate((("MOVES", None if self.moves_left is None else str(self.moves_left), (86, 216, 255)),
                                         ("SCORE", str(self.score), (255, 255, 255)),
                                         ("COMBO", f"×{self.combo}", (124, 255, 107)))):
             bx = x0 + i * 160
             _rr(s, (bx, 30, 148, 64), (35, 26, 60), 12)
             s.blit(f_med.render(k, True, DIM), (bx + 10, 34))
-            s.blit(f_big.render(v, True, col), (bx + 10, 52))
+            if v is None:  # ∞ glyph: default font lacks it, draw two rings
+                pygame.draw.circle(s, col, (bx + 28, 68), 11, 3)
+                pygame.draw.circle(s, col, (bx + 50, 68), 11, 3)
+            else:
+                s.blit(f_big.render(v, True, col), (bx + 10, 52))
         # fly + speech
         look = (0, 0)
         if self.phase == "aim" and self.pending:
@@ -606,7 +704,7 @@ class Game:
         # live learning curve (reward per brain move + baseline)
         recent = self.hist[-50:]
         avg = sum(recent) / len(recent) if recent else 0.0
-        s.blit(f_med.render(f"LEARNING · eps {self.eps:.2f} · updates {self.updates} · avg50 {avg:+.2f}",
+        s.blit(f_mono.render(f"LEARN e{self.eps:.2f} u{self.updates} {avg:+.2f} sv@{self.saved_updates} rej{self.invalid_count}",
                             True, DIM), (x0, yy))
         _rr(s, (x0, yy + 20, 424, 74), (10, 8, 20), 8)
         hist = self.hist[-220:]
@@ -657,7 +755,7 @@ class Game:
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--moves", type=int, default=25)
+    ap.add_argument("--moves", type=int, default=None, help="finite move limit (default: unlimited)")
     ap.add_argument("--speed", type=float, default=1.0)
     ap.add_argument("--smoke", type=int, default=0, help="headless frames then quit")
     ap.add_argument("--shot", default="", help="save one frame png then quit")
@@ -669,11 +767,7 @@ def main(argv=None):
     pygame.display.set_caption("FLYCRUSH — a fruit-fly connectome plays candy crush")
     screen = pygame.display.set_mode((W, H))
     fonts = (pygame.font.Font(None, 44), pygame.font.Font(None, 26), pygame.font.Font(None, 22))
-    g = Game(moves=args.moves, speed=args.speed)
-    if args.from_scratch:
-        g.policy = create_policy(1337)
-        g.prov = "random-init (from-scratch — watch it learn)"
-        g.say("blank brain — learning live, S saves", happy=0.5)
+    g = Game(moves=args.moves, speed=args.speed, from_scratch=args.from_scratch)
     g.playing = True
     clock = pygame.time.Clock()
     frames = 0
@@ -729,6 +823,10 @@ def main(argv=None):
         if args.smoke and frames >= args.smoke:
             print(f"smoke OK: {frames} frames, score={g.score}, moves_left={g.moves_left}, rl_updates={g.updates}")
             running = False
+    try:
+        g._adb.close()
+    except Exception:
+        pass
     pygame.quit()
 
 

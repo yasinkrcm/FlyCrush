@@ -68,6 +68,16 @@ describe('LIF network + motor decode', () => {
     for (const v of net.v) assert.ok(Number.isFinite(v) && v >= -2 && v <= 4, 'voltage escaped: ' + v);
     assert.ok(Number.isFinite(net.pamHz) && net.pamHz >= 0);
   });
+  it('healthy network fires spikes (double-leak regression)', () => {
+    const net = createNetwork(SUBSET);
+    const eye = createEye();
+    let total = 0;
+    for (let i = 0; i < 10; i++) {
+      const { vector } = eye.observe(demoBoard(2000 + i));
+      for (let s = 0; s < 4; s++) total += stepNetwork(net, vector, 0);
+    }
+    assert.ok(total > 0, 'network must spike, got ' + total);
+  });
   it('decodes safe motor ranges', () => {
     const net = createNetwork(SUBSET);
     const eye = createEye();

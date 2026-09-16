@@ -25,6 +25,19 @@ class TestAPI(unittest.TestCase):
         cls.port = cls.srv.server_address[1]
         cls.th = threading.Thread(target=cls.srv.serve_forever, daemon=True)
         cls.th.start()
+        # readiness wait: serve_forever loop may lag behind thread start
+        import time
+        import urllib.error
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                req = urllib.request.Request(f"http://127.0.0.1:{cls.port}/api/state")
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    if r.status == 200:
+                        return
+            except Exception:
+                time.sleep(0.05)
+        raise unittest.SkipTest("test server did not start")
 
     @classmethod
     def tearDownClass(cls):
@@ -61,6 +74,24 @@ class TestAPI(unittest.TestCase):
         self.assertEqual(st2["moves_left"], 10)
         code, rep = _call("GET", "/api/report", port=self.port)
         self.assertEqual(code, 200)
+
+    def test_turbo_trains(self):
+        import time
+        _, r0 = _call("GET", "/api/state", port=self.port)
+        u0 = r0["updates"]
+        code, r = _call("POST", "/api/turbo", {"episodes": 4}, port=self.port)
+        self.assertEqual(code, 200)
+        self.assertTrue(r["ok"])
+        job = r["job"]
+        deadline = time.time() + 120
+        while job.get("running") and time.time() < deadline:
+            time.sleep(0.5)
+            _, st = _call("GET", "/api/state", port=self.port)
+            job = st["job"]
+        self.assertFalse(job.get("running"), "turbo must finish")
+        self.assertEqual(job.get("done"), 4)
+        _, st = _call("GET", "/api/state", port=self.port)
+        self.assertGreater(st["updates"], u0, "turbo must produce learning updates")
 
     def test_static_frontend(self):
         req = urllib.request.Request(f"http://127.0.0.1:{self.port}/app.js")

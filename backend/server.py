@@ -30,7 +30,10 @@ from backend.session import Session  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONT = os.path.join(ROOT, "frontend")
+WEBDIST = os.path.join(ROOT, "web", "dist")
 PUBDATA = os.path.join(ROOT, "public", "data")
+
+HAS_WEB = os.path.isfile(os.path.join(WEBDIST, "index.html"))
 
 SESSION = Session()
 LOCK = threading.Lock()
@@ -90,9 +93,18 @@ class Handler(BaseHTTPRequestHandler):
         try:
             p = self.path.split("?", 1)[0]
             if p in ("/", "/index.html"):
+                if HAS_WEB:
+                    return _file(self, os.path.join(WEBDIST, "index.html"))
                 return _file(self, os.path.join(FRONT, "index.html"))
+            if p.startswith("/assets/") and HAS_WEB:
+                fp = os.path.normpath(os.path.join(WEBDIST, p.lstrip("/")))
+                if fp.startswith(WEBDIST) and os.path.isfile(fp):
+                    return _file(self, fp)
+                return _json(self, {"ok": False, "reason": "not-found"}, 404)
             if p == "/app.js":
                 return _file(self, os.path.join(FRONT, "app.js"))
+            if p == "/classic":
+                return _file(self, os.path.join(FRONT, "index.html"))
             if p.startswith("/public/data/"):
                 name = os.path.basename(p)
                 if name in ("connectome-subset.json", "readout-weights.json", "training-report.json"):
@@ -121,6 +133,11 @@ class Handler(BaseHTTPRequestHandler):
                     return _json(self, SESSION.fly_step())
                 if p == "/api/human_move":
                     return _json(self, SESSION.human_move(body.get("cell"), body.get("dir")))
+                if p == "/api/turbo":
+                    try:
+                        return _json(self, SESSION.start_turbo((body or {}).get("episodes", 200)))
+                    except Exception:
+                        return _json(self, {"ok": False, "reason": "turbo-failed"})
                 if p == "/api/new_game":
                     try:
                         fs = bool(body.get("from_scratch"))
@@ -145,12 +162,13 @@ class Handler(BaseHTTPRequestHandler):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8000)
-    ap.add_argument("--moves", type=int, default=25)
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--moves", type=int, default=None, help="finite move limit (default: unlimited)")
     ap.add_argument("--from-scratch", action="store_true")
     args = ap.parse_args(argv)
     global SESSION
     SESSION = Session(moves=args.moves, from_scratch=args.from_scratch)
-    srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    srv = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"FLYCRUSH web: http://localhost:{args.port}/  (backend+frontend, offline, stdlib only)")
     try:
         srv.serve_forever()

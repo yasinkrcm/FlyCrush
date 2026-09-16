@@ -183,6 +183,30 @@ def main() -> int:
                                           "trainedAt": datetime.now(timezone.utc).isoformat()}), fh)
     with open(os.path.join(dd, "training-report.json"), "w") as fh:
         json.dump(report, fh, indent=1)
+    # postgres log (guarded: no DB => files above are the record, nothing lost)
+    try:
+        from flycrush_py.db import connect, init_schema, log_run, save_readout
+        conn = connect(5.0)
+        if conn is not None:
+            try:
+                if init_schema(conn):
+                    save_readout(conn, "offline", policy, 0, report["eval120"]["trained"],
+                                 {"episodes": args.episodes, "seed": args.seed})
+                    log_run(conn, f"train-{args.seed}-{args.episodes}",
+                            {"episodes": args.episodes, "moves": MOVES, "seed": args.seed},
+                            report, curve)
+                    print("db: run + weights logged to postgres")
+                else:
+                    print("db: schema init failed, skipped")
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        else:
+            print("db: unreachable, skipped (JSON files are the record)")
+    except Exception as exc:
+        print(f"db: skipped ({exc})")
     print(json.dumps({"initAvg60": report["initAvg60"], **{k: v for k, v in report["eval120"].items() if k != "trainedMatchesPerGame"}, "oracle30": report["oracle30"]}))
     return 0
 
