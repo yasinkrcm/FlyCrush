@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLYCRUSH · a fruit-fly connectome plays candy crush</title>
+<!--
+  FLYCRUSH web UI — 1:1 mirror of flycrush_py/game.py (same layout, same
+  phases, same panels), driven by backend/server.py JSON API. No CDN, no
+  build step, fully offline on localhost.
+-->
+<style>
+  html,body{margin:0;padding:0;background:#1a1030;color:#c9d1d9;
+    font-family:ui-monospace,Menlo,Consolas,monospace}
+  .wrap{max-width:1160px;margin:0 auto;padding:10px 16px 30px}
+  canvas{width:100%;height:auto;display:block;border-radius:12px;
+    box-shadow:0 8px 40px rgba(0,0,0,.5)}
+  .bar{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0;align-items:center}
+  button{background:#241a45;border:1px solid #56d8ff;color:#56d8ff;font:inherit;
+    padding:8px 14px;cursor:pointer;letter-spacing:1px;border-radius:8px}
+  button:hover{background:#2e2358}
+  button.ghost{border-color:#4a3f6e;color:#9a8fc0}
+  #status{font-size:12px;color:#9a8fc0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <canvas id="game" width="1120" height="740"></canvas>
+  <div class="bar">
+    <button id="bPlay">▶ play</button>
+    <button id="bStep">step</button>
+    <button id="bReset" class="ghost">reset</button>
+    <button id="bSave" class="ghost">save brain</button>
+    <button id="bScratch" class="ghost">from scratch</button>
+    <span id="status">connecting…</span>
+  </div>
+  <div class="bar" style="font-size:12px;color:#9a8fc0">
+    SPACE play · N step · M manual (click two adjacent candies) · R reset · S save brain
+  </div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
