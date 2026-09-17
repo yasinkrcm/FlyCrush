@@ -4,6 +4,7 @@ import { api, Snapshot, Step, Subset, Report } from './api';
 import { CANDY } from './draw';
 
 export const CELL = 62;
+export const BX = 40, BY = 130; // scene-space origin of the board (floats/particles)
 const DV: Record<string, [number, number]> = {
   up: [-1, 0], down: [1, 0], left: [0, -1], right: [0, 1],
 };
@@ -19,6 +20,7 @@ export class FlyController {
   subset: Subset | null = null;
   report: Report = {};
   status = 'connecting…';
+  bootState: 'connecting' | 'online' | 'offline' = 'connecting';
   listeners = new Set<() => void>();
 
   phase: Phase = 'idle';
@@ -74,7 +76,12 @@ export class FlyController {
     this.subset = await api.subset();
     this.report = (await api.report()) || {};
     const st = await api.state();
-    if (!st) { this.setStatus('backend offline — run: ./.venv/bin/python -m backend.server'); return; }
+    if (!st) {
+      this.bootState = 'offline';
+      this.setStatus('backend offline — start it with: python -m backend.server (see README)');
+      return;
+    }
+    this.bootState = 'online';
     this.applyPub(st);
     this.setStatus(`brain: ${st.prov} · updates ${st.updates} · saved@${st.saved ?? 0} (postgres, auto)`);
   }
@@ -106,8 +113,8 @@ export class FlyController {
         const d = DV[this.pending.dir] || [0, 0];
         const r1 = Math.floor(this.pending.cell / 8), c1 = this.pending.cell % 8;
         this.floats.push({
-          x: 40 + ((2 * c1 + d[1]) / 2) * CELL + CELL / 2,
-          y: 130 + ((2 * r1 + d[0]) / 2) * CELL + CELL / 2,
+          x: BX + ((2 * c1 + d[1]) / 2) * CELL + CELL / 2,
+          y: BY + ((2 * r1 + d[0]) / 2) * CELL + CELL / 2,
           txt: '×', t: 0, big: true, col: '#ff5f5f',
         });
         this.rejectCells = [[r1, c1], [r1 + d[0], c1 + d[1]]]; this.rejectT = 0;
@@ -143,8 +150,8 @@ export class FlyController {
         const d0 = DV[dir] || [0, 0];
         const hr = Math.floor(cell / 8), hc = cell % 8;
         this.floats.push({
-          x: 40 + ((2 * hc + d0[1]) / 2) * CELL + CELL / 2,
-          y: 130 + ((2 * hr + d0[0]) / 2) * CELL + CELL / 2,
+          x: BX + ((2 * hc + d0[1]) / 2) * CELL + CELL / 2,
+          y: BY + ((2 * hr + d0[0]) / 2) * CELL + CELL / 2,
           txt: '×', t: 0, big: true, col: '#ff5f5f',
         });
         this.rejectCells = [[hr, hc], [hr + d0[0], hc + d0[1]]]; this.rejectT = 0;
@@ -175,8 +182,8 @@ export class FlyController {
 
   async turbo() {
     const res = await api.turbo(200);
-    if (res && res.ok) this.setStatus('TURBO başladı · 200 episode · ~1000 hamle/sn');
-    else if (res && (res as { reason?: string }).reason === 'already-running') this.setStatus('TURBO zaten koşuyor');
+    if (res && res.ok) this.setStatus('Turbo started · 200 episodes · ~1000 moves/s');
+    else if (res && (res as { reason?: string }).reason === 'already-running') this.setStatus('Turbo already running');
     else this.setStatus('turbo failed');
   }
 
@@ -241,7 +248,7 @@ export class FlyController {
         const st = this.steps[this.stepIdx];
         this.pops = new Set(st.matched.map(([r, c]) => r * 8 + c));
         for (const [r, c] of st.matched) {
-          const cx = 40 + c * CELL + CELL / 2, cy = 130 + r * CELL + CELL / 2;
+          const cx = BX + c * CELL + CELL / 2, cy = BY + r * CELL + CELL / 2;
           const bv = this.board?.[r]?.[c] ?? 0;
           const cc = CANDY[bv] ? CANDY[bv].c : '#fff';
           for (let i = 0; i < 4 && this.particles.length < 240; i++) {
@@ -261,7 +268,7 @@ export class FlyController {
         const m = st.matched;
         const cr = m.reduce((s, [r]) => s + r, 0) / m.length;
         const cc = m.reduce((s, [, c]) => s + c, 0) / m.length;
-        this.floats.push({ x: 40 + cc * CELL + CELL / 2, y: 130 + cr * CELL, txt: `+${st.gained}`, t: 0 });
+        this.floats.push({ x: BX + cc * CELL + CELL / 2, y: BY + cr * CELL, txt: `+${st.gained}`, t: 0 });
         this.say = `${st.word} +${st.gained}`; this.happy = 1; this.sayT = 0;
         this.emit();
         this.phase = 'fall'; this.phaseT = 0;
@@ -295,13 +302,12 @@ export class FlyController {
       if (this.phase === 'idle') {
         const s2 = await api.state();
         if (s2) {
+          if (this.bootState !== 'online') { this.bootState = 'online'; this.setStatus(`brain: ${s2.prov} · updates ${s2.updates}`); }
           this.applyPub(s2);
           const j = s2.job;
-          if (j && j.running) this.setStatus(`TURBO ${j.done}/${j.total} · avg ${j.avg} · eğri canlanıyor…`);
+          if (j && j.running) this.setStatus(`Turbo ${j.done}/${j.total} · avg ${j.avg.toFixed(0)} · curve warming up…`);
         }
       }
     } catch { /* poll never breaks the loop */ }
   };
 }
-
-export const BX = 40, BY = 130;

@@ -39,6 +39,9 @@ export function useController(): FlyController {
     }, 2000);
     const onKey = (e: KeyboardEvent) => {
       try {
+        // don't hijack keys when the user is on a button/input (Space activates buttons natively)
+        const tag = (e.target as HTMLElement | null)?.tagName;
+        if (tag === 'BUTTON' || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'A' || tag === 'SUMMARY') return;
         if (e.code === 'Space') { e.preventDefault(); ctl.playing = !ctl.playing; ctl.emit(); }
         else if (e.key === 'n' || e.key === 'N') { if (ctl.phase === 'idle' && ctl.snap && !ctl.snap.over) void ctl.flyStep(); }
         else if (e.key === 'm' || e.key === 'M') { ctl.manual = !ctl.manual; ctl.emit(); }

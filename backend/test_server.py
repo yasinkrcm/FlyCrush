@@ -60,7 +60,7 @@ class TestAPI(unittest.TestCase):
             s0 = res["steps"][0]
             self.assertIn("matched", s0)
             self.assertIn("falls", s0)
-            self.assertIn("board_after", s0)
+            self.assertIn("board", s0)
 
     def test_human_move_rejects_garbage(self):
         for bad in ({"cell": 99, "dir": "up"}, {"cell": 0, "dir": "sideways"}, {"cell": "x", "dir": "up"}):
@@ -94,10 +94,10 @@ class TestAPI(unittest.TestCase):
         self.assertGreater(st["updates"], u0, "turbo must produce learning updates")
 
     def test_static_frontend(self):
-        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/app.js")
+        req = urllib.request.Request(f"http://127.0.0.1:{self.port}/")
         with urllib.request.urlopen(req, timeout=10) as r:
             self.assertEqual(r.status, 200)
-            self.assertIn("FLYCRUSH", r.read().decode())
+            self.assertIn("FLYCRUSH", r.read().decode().upper())
 
 
 if __name__ == "__main__":

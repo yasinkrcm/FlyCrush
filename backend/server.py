@@ -29,11 +29,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from backend.session import Session  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FRONT = os.path.join(ROOT, "frontend")
 WEBDIST = os.path.join(ROOT, "web", "dist")
 PUBDATA = os.path.join(ROOT, "public", "data")
 
 HAS_WEB = os.path.isfile(os.path.join(WEBDIST, "index.html"))
+
+_NOBUILD = b"""<!doctype html><meta charset="utf-8"><title>FlyCrush</title>
+<body style="font-family:ui-monospace,Menlo,Consolas,monospace;background:#160b2e;color:#efe9ff;display:grid;place-items:center;height:100vh;margin:0">
+<div style="text-align:center"><h1>FLY<span style="color:#56d8ff">CRUSH</span></h1>
+<p>web app not built &mdash; run:</p>
+<pre style="background:#241a45;padding:12px 18px;border-radius:12px">cd web &amp;&amp; npm install &amp;&amp; npm run build</pre>
+</div></body>
+"""
 
 SESSION = Session()
 LOCK = threading.Lock()
@@ -95,16 +102,20 @@ class Handler(BaseHTTPRequestHandler):
             if p in ("/", "/index.html"):
                 if HAS_WEB:
                     return _file(self, os.path.join(WEBDIST, "index.html"))
-                return _file(self, os.path.join(FRONT, "index.html"))
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(_NOBUILD)))
+                self.end_headers()
+                try:
+                    self.wfile.write(_NOBUILD)
+                except Exception:
+                    pass
+                return
             if p.startswith("/assets/") and HAS_WEB:
                 fp = os.path.normpath(os.path.join(WEBDIST, p.lstrip("/")))
                 if fp.startswith(WEBDIST) and os.path.isfile(fp):
                     return _file(self, fp)
                 return _json(self, {"ok": False, "reason": "not-found"}, 404)
-            if p == "/app.js":
-                return _file(self, os.path.join(FRONT, "app.js"))
-            if p == "/classic":
-                return _file(self, os.path.join(FRONT, "index.html"))
             if p.startswith("/public/data/"):
                 name = os.path.basename(p)
                 if name in ("connectome-subset.json", "readout-weights.json", "training-report.json"):

@@ -269,7 +269,6 @@ export function Brain3D({ subset, rates }: { subset: Subset | null; rates: [numb
         if (!document.hidden) renderer!.render(scene, camera);
       } catch { /* frame loop never throws */ }
     };
-    (api as { _orbit?: { current: boolean } })._orbit = autoOrbitRef;
     fit();
     setState('ready');
     raf = requestAnimationFrame(animate);

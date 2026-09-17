@@ -32,7 +32,18 @@ export interface Subset {
   neurons: Neuron[]; renderCloud: [number, number, number, number][];
   decoders: { colIds: number[]; rowIds: number[]; gateIds: number[]; pamIds: number[] };
 }
-export interface Report { eval120?: { random: number; trained: number; firstFoundPlanner: number }; oracle30?: number; algo?: string; honestNote?: string; negativeControl?: string }
+export interface Report {
+  eval120?: {
+    random: number; randomValid?: number; trained: number;
+    trainedMatchesPerGame?: number; firstFoundPlanner: number;
+  };
+  oracle30?: number; algo?: string; honestNote?: string; negativeControl?: string;
+  trained?: string; features?: string;
+  supervised?: {
+    boards?: number; epochs?: number; lr?: number;
+    hit120?: number; hit120Pct?: number; avgScore120?: number;
+  };
+}
 
 async function jget<T>(u: string): Promise<T | null> {
   try {

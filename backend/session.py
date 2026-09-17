@@ -64,6 +64,7 @@ class Session:
         self._transition = None
         self._last_t = time.time()
         self._job_lock = threading.Lock()
+        self.train_lock = threading.Lock()  # serializes policy/updates writers (live + turbo)
         self._job = {"running": False, "done": 0, "total": 0, "avg": 0.0, "curve": []}
         # spike accounting sets (rebuilt indexes into net arrays)
         try:
@@ -198,7 +199,6 @@ class Session:
             so = sd = sp = sm = 0
             for _ in range(4):
                 step_network(self.net, vec, self.pam_drive)
-                self.pam_drive *= 0.9
                 try:
                     spk = self.net.spikes
                     if self._idx_optic:
@@ -211,6 +211,7 @@ class Session:
                         sm += int(spk[self._idx_mod].sum())
                 except Exception:
                     pass
+            self.pam_drive *= 0.88
             self._last_spikes = {"optic": so, "desc": sd, "pam": sp, "mod": sm}
             self._last_in_energy = round(float(abs(vec).sum()), 2)
             dec = decode_motor(self.net)
@@ -234,14 +235,15 @@ class Session:
             if not st:
                 return 0.0
             r = shape_reward({"ok": gained > 0, "score": gained})
-            self.baseline += 0.05 * (r - self.baseline)
-            from flycrush_py.rl import reinforce_update
-            reinforce_update(self.policy, st["feat"], st["cf"], st["cell"], st["di"],
-                             r - self.baseline, 0.05)
-            self.hist.append(r)
-            if len(self.hist) > 600:
-                self.hist = self.hist[-600:]
-            self.updates += 1
+            with self.train_lock:
+                self.baseline += 0.05 * (r - self.baseline)
+                from flycrush_py.rl import reinforce_update
+                reinforce_update(self.policy, st["feat"], st["cf"], st["cell"], st["di"],
+                                 r - self.baseline, 0.05)
+                self.hist.append(r)
+                if len(self.hist) > 600:
+                    self.hist = self.hist[-600:]
+                self.updates += 1
             recent = self.hist[-50:]
             if maybe_autosave(self._adb, "live", self.policy, self.updates,
                               sum(recent) / len(recent)):
@@ -326,6 +328,10 @@ class Session:
                               "word": WORDS.get(min(cascade, 4), "Sweet!"),
                               "falls": falls, "board": [row[:] for row in self.board]})
                 cascade += 1
+                try:
+                    self.pam_drive = min(2.0, self.pam_drive + reward_drive(len(matched)))
+                except Exception:
+                    pass
             if learn:
                 self._learn(self.score - score0)
             out = {"ok": True, "valid": True, "steps": steps}
@@ -376,7 +382,7 @@ class Session:
         self._transition = None  # human move: no policy transition to learn from
         res = self._apply_and_resolve(cell, direction, learn=False, via="human")
         if res.get("valid"):
-            try:  # human moves join the visible feed too (no learning, zeroed spikes)
+            try:
                 gained = sum(int(s.get("gained", 0)) for s in res.get("steps", []))
                 di = {"up": 0, "down": 1, "left": 2, "right": 3}.get(direction, 0)
                 self._move_log.append({"n": int(self.move_count), "cell": int(cell),
@@ -386,7 +392,6 @@ class Session:
                     self._move_log = self._move_log[-60:]
             except Exception:
                 pass
-        self._persist_game_state()
         self._persist_game_state()
         res.update(self._pub())
         return res
@@ -453,20 +458,21 @@ class Session:
                     dec = decode_motor(net)
                     feat = extract_features(vec, dec, net.pam_hz)
                     cf = cell_features(board)
-                    self.eps = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - self.updates / EPS_DECAY_N)
-                    act = policy_act(self.policy, feat, cf, self.rng, epsilon=self.eps)
-                    res = try_action(board, act["cell"], act["dir"], self.rng)
-                    r = shape_reward(res)
-                    if res["ok"]:
-                        board = res["board"]
-                        total += res["score"]
-                    self.baseline += 0.05 * (r - self.baseline)
-                    reinforce_update(self.policy, feat, cf, act["cell"], act["di"],
-                                     r - self.baseline, 0.05)
-                    self.hist.append(r)
-                    if len(self.hist) > 600:
-                        self.hist = self.hist[-600:]
-                    self.updates += 1
+                    with self.train_lock:
+                        self.eps = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - self.updates / EPS_DECAY_N)
+                        act = policy_act(self.policy, feat, cf, self.rng, epsilon=self.eps)
+                        res = try_action(board, act["cell"], act["dir"], self.rng)
+                        r = shape_reward(res)
+                        if res["ok"]:
+                            board = res["board"]
+                            total += res["score"]
+                        self.baseline += 0.05 * (r - self.baseline)
+                        reinforce_update(self.policy, feat, cf, act["cell"], act["di"],
+                                         r - self.baseline, 0.05)
+                        self.hist.append(r)
+                        if len(self.hist) > 600:
+                            self.hist = self.hist[-600:]
+                        self.updates += 1
                     recent = self.hist[-50:]
                     maybe_autosave(self._adb, "live", self.policy, self.updates,
                                    sum(recent) / len(recent))

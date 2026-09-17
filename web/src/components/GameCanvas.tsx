@@ -17,6 +17,11 @@ export function GameCanvas({ ctl }: { ctl: FlyController }) {
     if (!cv) return;
     const ctx = cv.getContext('2d');
     if (!ctx) return;
+    // render at devicePixelRatio so the board stays crisp on HiDPI screens
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    cv.width = PW * dpr;
+    cv.height = PH * dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     let raf = 0;
     let last = 0;
     const loop = (t: number) => {
@@ -134,5 +139,20 @@ function draw(ctx: CanvasRenderingContext2D, ctl: FlyController, t: number) {
     ctx.beginPath();
     ctx.arc(p.x + LX, p.y + LY, Math.max(1, 4 * (1 - p.t / p.life)), 0, 7);
     ctx.fill();
+  }
+  if (ctl.snap?.over) {
+    ctx.fillStyle = 'rgba(22, 11, 46, 0.6)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(0, 0, PW, CELL * 8 + 28, 22);
+    else ctx.rect(0, 0, PW, CELL * 8 + 28);
+    ctx.fill();
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#fff8eb';
+    ctx.font = 'bold 26px ui-monospace,monospace';
+    ctx.fillText('game over', PW / 2, PH / 2 - 8);
+    ctx.font = '16px ui-monospace,monospace';
+    ctx.fillStyle = '#d28cc8';
+    ctx.fillText(`${ctl.snap.score} pts · new grid in a moment…`, PW / 2, PH / 2 + 22);
+    ctx.textAlign = 'left';
   }
 }

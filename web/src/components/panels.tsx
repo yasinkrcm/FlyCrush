@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { Activity, Zap } from 'lucide-react';
 import type { FlyController } from '../controller';
 import type { DirKey, Report, Snapshot, Subset } from '../api';
@@ -65,7 +65,7 @@ export function FlyAvatar({ ctl }: { ctl: FlyController }) {
   }, [ctl]);
   return (
     <div className="flyrow">
-      <canvas ref={ref} width={120} height={110} className="flycv" />
+      <canvas ref={ref} width={120} height={110} className="flycv" role="img" aria-label="cartoon fly avatar" />
       <div className="speech">
         <div className="say">{ctl.say}</div>
         <div className="prov">brain: {ctl.snap?.prov ?? '…'}</div>
@@ -138,83 +138,12 @@ export function FlyCam({ board }: { board: number[][] | null }) {
       ctx.fillStyle = 'rgba(0,0,0,0.25)';
       for (let y = 0; y < 132; y += 4) ctx.fillRect(0, y, 132, 1);
     } catch { /* never */ }
-  });
+  }, [board]);
   return (
     <Card title="FLY CAM · what the network saw">
-      <canvas ref={ref} width={132} height={132} className="camcv" />
+      <canvas ref={ref} width={132} height={132} className="camcv" role="img" aria-label="low-resolution view of the game board as the fly eye sees it" />
       <div className="dim small">4×4 regions of color contrast — never crisp sprites</div>
     </Card>
-  );
-}
-
-const GROUP_C: Record<string, [number, number, number]> = {
-  desc: [124, 255, 107], mod: [255, 180, 80], optic: [86, 216, 255],
-};
-function groupOf(type: string): keyof typeof GROUP_C {
-  if (type === 'DNa01' || type === 'DNa02' || type === 'DNp') return 'desc';
-  if (type === 'PAM-DAN' || type === 'MBON') return 'mod';
-  return 'optic';
-}
-
-export function BrainViews({ subset, rates }: { subset: Subset | null; rates: [number, number][] | undefined }) {
-  const fRef = useRef<HTMLCanvasElement>(null);
-  const dRef = useRef<HTMLCanvasElement>(null);
-  const cloud = useMemo(() => {
-    const rc = subset?.renderCloud || [];
-    const stride = Math.max(1, Math.ceil(rc.length / 900));
-    const out: [number, number, number][] = [];
-    for (let i = 0; i < rc.length; i += stride) {
-      if (Array.isArray(rc[i])) out.push([+rc[i][0], +rc[i][1], +rc[i][2]]);
-    }
-    return out;
-  }, [subset]);
-  const posOf = useMemo(() => {
-    const m = new Map<number, [number, number, number]>();
-    const g = new Map<number, keyof typeof GROUP_C>();
-    (subset?.neurons || []).forEach((n, i) => {
-      if (n && Array.isArray(n.xyz)) {
-        m.set(i, n.xyz);
-        g.set(i, groupOf(n.type));
-      }
-    });
-    return { m, g };
-  }, [subset]);
-
-  useEffect(() => {
-    for (const [ref, view] of [[fRef, 'frontal'], [dRef, 'dorsal']] as const) {
-      const cv = ref.current;
-      if (!cv) continue;
-      const ctx = cv.getContext('2d');
-      if (!ctx) continue;
-      try {
-        const Wd = cv.width, Ht = cv.height;
-        ctx.fillStyle = '#05070b'; ctx.fillRect(0, 0, Wd, Ht);
-        const proj = (x: number, y: number, z: number): [number, number] =>
-          view === 'frontal'
-            ? [((x * 0.9 + 1) / 2) * Wd, ((1 - (y * 0.75 + 0.5)) / 1.6) * Ht]
-            : [((x * 0.9 + 1) / 2) * Wd, ((1 - (z * 0.8 + 0.3)) / 1.4) * Ht];
-        ctx.fillStyle = 'rgb(90,110,150)';
-        for (const p of cloud) {
-          const [sx, sy] = proj(p[0], p[1], p[2]);
-          ctx.fillRect(sx, sy, 1.4, 1.4);
-        }
-        for (const [idx, rate] of rates || []) {
-          if (rate < 0.08) continue;
-          const xyz = posOf.m.get(idx);
-          if (!xyz) continue;
-          const col = GROUP_C[posOf.g.get(idx) || 'optic'];
-          const [sx, sy] = proj(xyz[0], xyz[1], xyz[2]);
-          ctx.fillStyle = `rgba(${col[0]},${col[1]},${col[2]},${Math.min(1, 0.4 + rate)})`;
-          ctx.beginPath(); ctx.arc(sx, sy, 3, 0, 7); ctx.fill();
-        }
-      } catch { /* never */ }
-    }
-  });
-  return (
-    <div className="brainrow">
-      <Card title="Brain · frontal"><canvas ref={fRef} width={220} height={150} className="wide" /></Card>
-      <Card title="CNS · dorsal"><canvas ref={dRef} width={220} height={150} className="wide" /></Card>
-    </div>
   );
 }
 
@@ -223,6 +152,7 @@ export function CurvePanel({ s }: { s: Snapshot | null }) {
   const jc = s?.job?.curve || [];
   const useJob = jc.length > 1;
   const data = useJob ? jc.slice(-120) : (s?.hist || []).slice(-220);
+  const avg = (s?.hist || []).slice(-50).reduce((a, b) => a + b, 0) / Math.max(1, (s?.hist || []).slice(-50).length);
   useEffect(() => {
     const cv = ref.current;
     if (!cv) return;
@@ -235,6 +165,14 @@ export function CurvePanel({ s }: { s: Snapshot | null }) {
       const mx = Math.max(useJob ? 1 : 0.6, ...data);
       const mn = Math.min(useJob ? 0 : -0.1, ...data);
       const span = mx - mn || 1;
+      // pink dashed baseline: live avg reward per move (reward mode only)
+      if (!useJob) {
+        const by = Ht - 6 - ((avg - mn) / span) * (Ht - 12);
+        ctx.strokeStyle = '#ff5fd2'; ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(6, by); ctx.lineTo(Wd - 6, by); ctx.stroke();
+        ctx.setLineDash([]);
+      }
       ctx.strokeStyle = '#7cff6b'; ctx.lineWidth = 2; ctx.beginPath();
       data.forEach((v, i) => {
         const x = 6 + (i / (data.length - 1)) * (Wd - 12);
@@ -246,17 +184,15 @@ export function CurvePanel({ s }: { s: Snapshot | null }) {
       ctx.fillStyle = '#7a8598'; ctx.font = '10px monospace';
       ctx.fillText(useJob ? 'turbo · score / episode' : 'reward / brain move', 8, 14);
     } catch { /* never */ }
-  });
-  const recent = (s?.hist || []).slice(-50);
-  const avg = recent.length ? recent.reduce((a, b) => a + b, 0) / recent.length : 0;
+  }, [data, useJob, avg]);
   return (
     <Card
       title="LEARNING · live"
       icon={<Zap size={14} />}
       right={<span>{`e${s?.eps ?? 0} · u${s?.updates ?? 0} · ${avg >= 0 ? '+' : ''}${avg.toFixed(2)} · sv@${s?.saved ?? 0}`}</span>}
     >
-      <canvas ref={ref} width={420} height={110} className="wide" />
-      <div className="dim small">green = reward · pink baseline · turbo curve in score/episode</div>
+      <canvas ref={ref} width={420} height={110} className="wide" role="img" aria-label="live learning curve" />
+      <div className="dim small">green = reward / brain move · pink dashed = avg (last 50) · turbo curves in score/episode</div>
     </Card>
   );
 }
@@ -300,7 +236,7 @@ export function Inspector({ s, subset }: { s: Snapshot | null; subset: Subset | 
       ctx.fillStyle = '#7a8598'; ctx.font = '10px monospace';
       ctx.fillText('O', 4, 20); ctx.fillText('D', 4, 44); ctx.fillText('P', 4, 68);
     } catch { /* never */ }
-  });
+  }, [trace]);
 
   const last = s?.last;
   const firing = [...(s?.rates || [])].sort((a, b) => b[1] - a[1]).slice(0, 8);
@@ -308,7 +244,7 @@ export function Inspector({ s, subset }: { s: Snapshot | null; subset: Subset | 
   return (
     <Card title="BRAIN INSPECTOR · every move, every layer" className="insp">
       <div className="dim small">spike raster · last 40 moves (O optic / D descending / P PAM11)</div>
-      <canvas ref={raster} width={420} height={80} className="wide" />
+      <canvas ref={raster} width={420} height={80} className="wide" role="img" aria-label="spike raster of the last 40 moves" />
       <div className="lbars">
         {LAYER_META.map(([k, label, col]) => (
           <div className="lbar" key={k}>
@@ -365,7 +301,7 @@ export function RejectedPanel({ s }: { s: Snapshot | null }) {
             </span>
           ))
         ) : (
-          <span className="dim">henüz yok — sinek utangaç</span>
+          <span className="dim">none yet — the fly is shy</span>
         )}
       </div>
     </Card>
@@ -383,7 +319,7 @@ export function MoveFeed({ s }: { s: Snapshot | null }) {
   }));
   const feed = [...t, ...inv].sort((a, b) => b.n - a.n).slice(0, 8);
   return (
-    <Card title="HAMLELER · every move the fly makes" right={<span>son 8</span>}>
+    <Card title="MOVES · every move the fly makes" right={<span>last 8</span>}>
       <div className="rejlist">
         {feed.length ? (
           feed.map((m, i) => (
@@ -393,27 +329,50 @@ export function MoveFeed({ s }: { s: Snapshot | null }) {
             </span>
           ))
         ) : (
-          <span className="dim">oynuyor… birazdan burada</span>
+          <span className="dim">playing… moves will appear here</span>
         )}
       </div>
     </Card>
   );
 }
 
-export function EvalPanel({ report }: { report: Report }) {  const ev = report.eval120;
-  if (!ev) return null;
+export function EvalPanel({ report }: { report: Report }) {
+  const ev = report.eval120;
+  const fmt = (v: number | undefined) => (typeof v === 'number' ? v.toFixed(1) : '—');
   return (
-    <Card title="EVAL · 120 fresh boards">
-      <table className="eval">
-        <tbody>
-          <tr><td>random policy</td><td>{ev.random}</td></tr>
-          <tr><td><b>trained readout</b></td><td><b>{ev.trained}</b></td></tr>
-          <tr><td>engineered planner (search)</td><td>{ev.firstFoundPlanner}</td></tr>
-        </tbody>
-      </table>
+    <Card title="EVAL · 120 fresh boards" right={<span>avg points / 25-move game</span>}>
+      {!ev ? (
+        <div className="dim small">eval pending — run <code>python -m flycrush_py.evaluate</code></div>
+      ) : (
+        <table className="eval">
+          <tbody>
+            <tr><td>random policy (no rule knowledge)</td><td>{fmt(ev.random)}</td></tr>
+            <tr><td><b>trained readout (this brain)</b></td><td><b className="c-grn">{fmt(ev.trained)}</b></td></tr>
+            {typeof ev.randomValid === 'number' && (
+              <tr><td>random valid pairs (search)</td><td>{fmt(ev.randomValid)}</td></tr>
+            )}
+            <tr><td>engineered planner (search)</td><td>{fmt(ev.firstFoundPlanner)}</td></tr>
+          </tbody>
+        </table>
+      )}
+      {report.supervised && typeof report.supervised.hit120 === 'number' && (
+        <div className="eval-extra">
+          <span className="ftag">valid-move hit rate {(report.supervised.hit120 * 100).toFixed(1)}%</span>
+          {typeof report.supervised.avgScore120 === 'number' && (
+            <span className="ftag">{report.supervised.avgScore120.toFixed(1)} pts per greedy move</span>
+          )}
+          {typeof report.oracle30 === 'number' && (
+            <span className="ftag">oracle ceiling {report.oracle30.toFixed(0)} (best-of-search, 30 boards)</span>
+          )}
+        </div>
+      )}
       <details>
         <summary>methods + negative control</summary>
-        <div className="dim small">{report.algo} {report.negativeControl}</div>
+        <div className="dim small">
+          {report.algo ? <p>{report.algo}</p> : null}
+          {report.negativeControl ? <p>{report.negativeControl}</p> : null}
+          {report.honestNote ? <p>{report.honestNote}</p> : null}
+        </div>
       </details>
     </Card>
   );

@@ -157,11 +157,14 @@ def save_readout(conn, name: str, policy, updates: int = 0, avg50: float = 0.0,
 
 
 def _bytes_to_policy(policy, row: dict) -> bool:
-    """row: dict with w1/b1/w2/b2/wprior bytes + arch dict. Validated, clipped."""
+    """row: dict with w1/b1/w2/b2/wprior bytes + arch dict. Validated, clipped.
+    Expected dims derive from the live policy so any architecture round-trips."""
     try:
         import numpy as np
         a = row.get("arch") or {}
-        exp = {"CF": 10, "H": 16, "C": 64, "D": 4, "F": 73}
+        exp = {"CF": int(policy.W1.shape[0]), "H": int(policy.W1.shape[1]),
+               "C": int(policy.W2.shape[1] // 4), "D": 4,
+               "F": int(policy.Wprior.shape[0])}
         if any(a.get(k) != v for k, v in exp.items()):
             return False
         parts = (("w1", policy.W1), ("b1", policy.b1), ("w2", policy.W2),

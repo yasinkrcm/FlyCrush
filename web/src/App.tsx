@@ -33,11 +33,17 @@ export default function App() {
           </span>
           {job?.running && (
             <span className="prov turbo">
-              <Zap size={13} /> TURBO {job.done}/{job.total} · avg {job.avg}
+              <Zap size={13} /> TURBO {job.done}/{job.total} · avg {job.avg.toFixed(0)}
             </span>
           )}
         </div>
       </header>
+
+      {ctl.bootState === 'offline' && (
+        <div className="boot-banner" role="alert">
+          <b>backend offline</b> — panels will stay empty. Start it with <code>python -m backend.server</code> (see README), then reload.
+        </div>
+      )}
 
       <main className="grid">
         <section className="col-game">
@@ -103,8 +109,8 @@ export default function App() {
         <span>{ctl.status}</span>
         <span className="dim">deterministic REINFORCE readout · frozen LIF wiring · no search in the decision path</span>
         <span className="dim">
-          brain viewer pattern: <a href="https://github.com/cobanov/fly-connectome-template">fly-connectome-template</a> ·
-          list: <a href="https://github.com/cobanov/awesome-fly">awesome-fly</a>
+          brain viewer pattern: <a href="https://github.com/cobanov/fly-connectome-template" target="_blank" rel="noreferrer">fly-connectome-template</a> ·
+          list: <a href="https://github.com/cobanov/awesome-fly" target="_blank" rel="noreferrer">awesome-fly</a>
         </span>
       </footer>
     </div>

@@ -1,7 +1,10 @@
 .env
 .venv/
-data/
+/data/
 __pycache__/
 *.pyc
 node_modules/
-.next/
+dist/
+web/dist/
+.DS_Store
+.commandcode/

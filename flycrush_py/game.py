@@ -210,7 +210,7 @@ class Game:
             vec, _ = self.eye.observe(self.board)
             for _ in range(4):
                 step_network(self.net, vec, self.pam_drive)
-                self.pam_drive *= 0.9
+            self.pam_drive *= 0.88
             dec = decode_motor(self.net)
             feat = extract_features(vec, dec, self.net.pam_hz)
             cf = cell_features(self.board)
@@ -307,6 +307,10 @@ class Game:
             self.best = max(self.best, self.chain)
             spike = 90 if removed >= 5 else 60 if removed == 4 else 38
             self.dopa = min(120.0, self.dopa + spike)
+            try:
+                self.pam_drive = min(2.0, self.pam_drive + reward_drive(removed))
+            except Exception:
+                pass
             self.say(f"{WORDS.get(min(self.cascade, 4), 'Sweet!')} +{pts}", happy=1.0) if False else self.say(f"{WORDS.get(min(self.cascade, 4), 'Sweet!')} +{pts}", happy=1.0)
             cr = sum(r for r, _ in m) / removed
             cc = sum(c for _, c in m) / removed
