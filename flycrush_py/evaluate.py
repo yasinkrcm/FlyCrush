@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flycrush_py.board import DIRS, Rng, create_board, find_valid_move, reshuffle, try_action  # noqa: E402
 from flycrush_py.data import data_dir, load_json  # noqa: E402
 from flycrush_py.lif import create_network, decode_motor, step_network  # noqa: E402
-from flycrush_py.rl import cell_features, create_policy, extract_features, import_weights, policy_act  # noqa: E402
+from flycrush_py.rl import ALGO, create_policy, extract_features, import_weights, pair_features, policy_act  # noqa: E402
 from flycrush_py.sensory import Eye  # noqa: E402
 from flycrush_py.train import MOVES, eval_first_found, eval_oracle, eval_random, play_episode  # noqa: E402
 
@@ -70,8 +70,8 @@ def eval_hit(subset, policy, n, seed):
             step_network(net, vec, 0.0)
         dec = decode_motor(net)
         feat = extract_features(vec, dec, net.pam_hz)
-        cf = cell_features(board)
-        act = policy_act(policy, feat, cf, Rng(seed + 100000 + i), greedy=True)
+        pf = pair_features(board)
+        act = policy_act(policy, feat, pf, Rng(seed + 100000 + i), greedy=True)
         res = try_action(board, act["cell"], act["dir"], Rng(seed + 200000 + i))
         if res.get("ok"):
             hits += 1
@@ -132,8 +132,8 @@ def main() -> int:
             "LIF wiring + time constants",
             "decode grouping (DNa01/DNa02/DNp/PAM11)",
         ],
-        "trained": "pair-aware 20->32->4 swap scorer + linear 73->4 dir prior",
-        "features": "raw color-equality counts of the cell AND its swap neighbor (no valid-move oracle) + 73 global sensory/LIF features",
+        "trained": "cross-aware pair-aware 25->32->4 swap scorer + linear 73->4 dir prior",
+        "features": "raw cross-color equality counts: mover tile vs tiles around its landing spot (no valid-move oracle) + 73 global sensory/LIF features",
         "seed": SEED,
         "initAvg120": round(init_avg, 1),
         "eval120": {
@@ -163,9 +163,11 @@ def main() -> int:
             "supervised.avgScore120": "avg points of that single greedy move",
         },
         "honestNote": "Reward = match score/200 (dopamine), invalid = -0.05. No oracle features; "
-                      "planner labels are used only as the supervised teaching signal, never as policy inputs.",
-        "negativeControl": "Engineered valid-move planner beats the trained readout by search; "
-                           "the readout earns its label: every decision flows eye->LIF->readout.",
+                      "planner labels are used only as the supervised teaching signal, never as policy inputs. "
+                      "Perception is 25 raw cross-color equalities per swap — no game-rule oracle.",
+        "negativeControl": "The readout outplays the first-found-move planner, but uniform random valid play "
+                           "(which always knows a legal move) and the best-of-search oracle still score higher. "
+                           "Search power remains real; the readout earns its label: every decision flows eye->LIF->readout.",
     }
 
     dd = data_dir()
@@ -174,6 +176,7 @@ def main() -> int:
 
     # sync the hit metrics into the weights meta so both artifacts agree
     doc.setdefault("meta", {})
+    doc["meta"]["algo"] = ALGO
     doc["meta"]["hit120"] = round(hit, 3)
     doc["meta"]["avgScore120"] = round(avg_score, 1)
     with open(os.path.join(dd, "readout-weights.json"), "w") as fh:

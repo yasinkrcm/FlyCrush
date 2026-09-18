@@ -1,11 +1,14 @@
-"""REINFORCE readout v4 — PAIR-AWARE tiled scorer.
+"""REINFORCE readout v5 — CROSS-AWARE pair perception.
 
-Joint 256-way: for each valid (cell,dir) pair, concatenate 10-dim features
-of the cell AND its directed neighbor (20-dim total) -> shared H=32 MLP
--> 4 dir logits per cell. This lets the net see BOTH sides of the swap,
-which is required to tell whether swapping will form a 3-run.
-Plus 73->4 descending prior. Valid-pair edge-masked softmax over 256.
-Hile yok: pair features are raw 2-neighbor color equalities, never search.
+Joint 256-way: for each valid (cell,dir) pair the net sees a 25-dim swap-
+perception vector built from RAW color equalities only (same kind of sensing
+as the old per-cell features, but CROSSED): the color of the tile that moves
+is compared against the colors of the tiles around where it LANDS, and the
+partner tile's color against the tiles around the vacated cell. Those equalities
+cover every 3-run window through either swapped cell, so swap validity becomes
+physically observable to the net without any game-rule oracle. Plus 73->4
+descending prior. Valid-pair edge-masked softmax over 256.
+Hile yok: every feature is a raw board-color comparison, never search.
 """
 from __future__ import annotations
 
@@ -15,20 +18,17 @@ import numpy as np
 
 from .board import DIRS, Rng, valid_dirs
 
-FEAT_DIM, CELL_F, PAIR_F, CELL_H, CELL_N, DIR_N, ACT_N = 73, 10, 20, 32, 64, 4, 256
+FEAT_DIM, CELL_F, PAIR_F, CELL_H, CELL_N, DIR_N, ACT_N = 73, 10, 25, 32, 64, 4, 256
 DEFAULT_LR = 0.05
+ALGO = "REINFORCE v5 cross-aware 25->32->4 + 73->4 prior (frozen LIF)"
+
+_DVEC = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}
 
 _PAIR_MASK = np.zeros(ACT_N, dtype=bool)
-_PAIR_NEIGH = np.full(ACT_N, -1, dtype=int)
 for _cell in range(64):
     _vd = valid_dirs(_cell)
-    r, c = divmod(_cell, 8)
     for _i, _d in enumerate(DIRS):
-        idx = _cell * 4 + _i
-        _PAIR_MASK[idx] = _vd[_d]
-        if _vd[_d]:
-            dr, dc = ({"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}[_d])
-            _PAIR_NEIGH[idx] = (r + dr) * 8 + (c + dc)
+        _PAIR_MASK[_cell * 4 + _i] = _vd[_d]
 
 def pair_cell(a: int) -> int:
     return a // 4
@@ -53,35 +53,67 @@ def extract_features(vec, decode: dict, pam_hz: float = 0.0) -> np.ndarray:
         pass
     return f
 
-def _cell_color(board, r, c) -> int:
+def _pos_color(board, r, c) -> int:
     try:
-        v = board[r][c]
-        return v if isinstance(v, int) and 0 <= v < 6 else -1
-    except Exception:
-        return -1
-
-def cell_features(board) -> np.ndarray:
-    out = np.zeros((CELL_N, CELL_F))
-    try:
-        ds = ((-1, 0), (1, 0), (0, -1), (0, 1))
-        for r in range(8):
-            for c in range(8):
-                k = r * 8 + c
-                col = _cell_color(board, r, c)
-                out[k, 0] = col / 5.0 if col >= 0 else 0.0
-                edge = 0
-                for i, (dr, dc) in enumerate(ds):
-                    r1, c1, r2, c2 = r + dr, c + dc, r + 2 * dr, c + 2 * dc
-                    if not (0 <= r1 < 8 and 0 <= c1 < 8):
-                        edge += 1
-                        continue
-                    if col >= 0 and _cell_color(board, r1, c1) == col:
-                        out[k, 1 + i] = 1.0
-                        if 0 <= r2 < 8 and 0 <= c2 < 8 and _cell_color(board, r2, c2) == col:
-                            out[k, 5 + i] = 1.0
-                out[k, 9] = edge / 4.0
+        if 0 <= r < 8 and 0 <= c < 8:
+            v = board[r][c]
+            return v if isinstance(v, int) and 0 <= v < 6 else -1
     except Exception:
         pass
+    return -1
+
+def pair_features(board) -> np.ndarray:
+    """(ACT_N, 25) swap-perception features. Raw color equalities only.
+
+    Layout per valid (cell A, dir d) with partner B = A+d:
+      [0] mover color /5        [1] partner color /5     [2] mover==partner
+      [3:14]  1.0 where the tile AROUND THE LANDING CELL B matches the MOVER's
+              color: B+d, B+2d, B-2d, B±p1, B±2p1, B±p2, B±2p2 (runs through B)
+      [14:25] 1.0 where the tile AROUND THE VACATED CELL A matches the
+              PARTNER's color: A-d, A-2d, A+2d, A±p1, A±2p1, A±p2, A±2p2
+              (runs through A)
+    p1/p2 are the two directions perpendicular to d. Off-board = 0.
+    These equalities cover every 3-window through either swapped cell, which
+    is exactly the physics of swap validity — no oracle.
+    """
+    out = np.zeros((ACT_N, PAIR_F))
+    for cell in range(CELL_N):
+        r1, c1 = divmod(cell, 8)
+        ac = _pos_color(board, r1, c1)
+        for di, d in enumerate(DIRS):
+            idx = cell * 4 + di
+            if not _PAIR_MASK[idx]:
+                continue
+            dr, dc = _DVEC[d]
+            r2, c2 = r1 + dr, c1 + dc
+            bc = _pos_color(board, r2, c2)
+            f = out[idx]
+            f[0] = ac / 5.0 if ac >= 0 else 0.0
+            f[1] = bc / 5.0 if bc >= 0 else 0.0
+            f[2] = 1.0 if (ac >= 0 and ac == bc) else 0.0
+            p1r, p1c = -dc, dr
+            p2r, p2c = dc, -dr
+            k = 3
+            # runs through the LANDING cell (mover color ac lands at B)
+            for rr, cc in ((r2 + dr, c2 + dc), (r2 + 2 * dr, c2 + 2 * dc),
+                           (r2 - 2 * dr, c2 - 2 * dc),
+                           (r2 + p1r, c2 + p1c), (r2 + 2 * p1r, c2 + 2 * p1c),
+                           (r2 - p1r, c2 - p1c), (r2 - 2 * p1r, c2 - 2 * p1c),
+                           (r2 + p2r, c2 + p2c), (r2 + 2 * p2r, c2 + 2 * p2c),
+                           (r2 - p2r, c2 - p2c), (r2 - 2 * p2r, c2 - 2 * p2c)):
+                pc = _pos_color(board, rr, cc)
+                f[k] = 1.0 if (ac >= 0 and pc == ac) else 0.0
+                k += 1
+            # runs through the VACATED cell (partner color bc lands at A)
+            for rr, cc in ((r1 - dr, c1 - dc), (r1 - 2 * dr, c1 - 2 * dc),
+                           (r1 + 2 * dr, c1 + 2 * dc),
+                           (r1 + p1r, c1 + p1c), (r1 + 2 * p1r, c1 + 2 * p1c),
+                           (r1 - p1r, c1 - p1c), (r1 - 2 * p1r, c1 - 2 * p1c),
+                           (r1 + p2r, c1 + p2c), (r1 + 2 * p2r, c1 + 2 * p2c),
+                           (r1 - p2r, c1 - p2c), (r1 - 2 * p2r, c1 - 2 * p2c)):
+                pc = _pos_color(board, rr, cc)
+                f[k] = 1.0 if (bc >= 0 and pc == bc) else 0.0
+                k += 1
     return out
 
 @dataclass
@@ -106,20 +138,16 @@ def create_policy(seed: int = 1337, rng: Rng | None = None) -> Policy:
         Wprior=small((FEAT_DIM, DIR_N), (1.0 / FEAT_DIM) ** 0.5),
     )
 
-def forward(policy: Policy, feat: np.ndarray, cf: np.ndarray):
+def forward(policy: Policy, feat: np.ndarray, pf: np.ndarray):
     prior = feat @ policy.Wprior  # 4
     logits = np.full(ACT_N, -1e9)
     hid_cache = np.zeros((ACT_N, CELL_H))
     for cell in range(CELL_N):
-        base = cf[cell]
         for di in range(DIR_N):
             idx = cell * 4 + di
             if not _PAIR_MASK[idx]:
                 continue
-            nb = int(_PAIR_NEIGH[idx])
-            nf = cf[nb] if 0 <= nb < CELL_N else np.zeros(CELL_F)
-            pv = np.concatenate((base, nf))  # 20
-            z = pv @ policy.W1 + policy.b1
+            z = pf[idx] @ policy.W1 + policy.b1
             h = np.tanh(np.clip(z, -6, 6))
             hid_cache[idx] = h
             s = float(h @ policy.W2[:, di] + policy.b2[di] + prior[di])
@@ -156,9 +184,9 @@ def policy_act(policy: Policy, feat, cf, rng: Rng, epsilon=0.05, greedy=False) -
     best = max((probs[cell * 4 + d] for d in range(4) if _PAIR_MASK[cell * 4 + d]), default=0.0)
     return {"cell": cell, "di": di, "dir": DIRS[di], "probs": probs, "gate": round(float(best), 3)}
 
-def reinforce_update(policy: Policy, feat, cf, cell: int, di: int, adv: float, lr: float = DEFAULT_LR):
+def reinforce_update(policy: Policy, feat, pf, cell: int, di: int, adv: float, lr: float = DEFAULT_LR):
     try:
-        _, probs, hid_cache = forward(policy, feat, cf)
+        _, probs, hid_cache = forward(policy, feat, pf)
         sel = cell * 4 + di
         k = lr * adv
         onehot = np.zeros(ACT_N)
@@ -181,10 +209,7 @@ def reinforce_update(policy: Policy, feat, cf, cell: int, di: int, adv: float, l
                 policy.W2[:, di2] += gval * h
                 dh = gval * (policy.W2[:, di2] * (1 - h * h))
                 policy.b1 += dh * 0.25
-                nb = int(_PAIR_NEIGH[idx])
-                base_pf = cf[cell_idx]; nf = cf[nb] if 0 <= nb < CELL_N else np.zeros(CELL_F)
-                pv = np.concatenate((base_pf, nf))
-                policy.W1 += np.outer(pv, dh)
+                policy.W1 += np.outer(pf[idx], dh)
         policy.b2 += d_out.sum(axis=0) * 0.25
         for arr in (policy.W1, policy.W2, policy.Wprior, policy.b1, policy.b2):
             np.nan_to_num(arr, copy=False)
@@ -192,12 +217,12 @@ def reinforce_update(policy: Policy, feat, cf, cell: int, di: int, adv: float, l
     except Exception:
         pass
 
-def supervised_update(policy: Policy, feat, cf, valid_pairs: list[int], lr: float = 0.08):
+def supervised_update(policy: Policy, feat, pf, valid_pairs: list[int], lr: float = 0.08):
     """One CE step toward uniform over valid_pairs. No search at inference."""
     try:
         if not valid_pairs:
             return 0.0
-        _, probs, hid_cache = forward(policy, feat, cf)
+        _, probs, hid_cache = forward(policy, feat, pf)
         target = np.zeros(ACT_N)
         for p in valid_pairs:
             if 0 <= p < ACT_N and _PAIR_MASK[p]:
@@ -221,10 +246,7 @@ def supervised_update(policy: Policy, feat, cf, valid_pairs: list[int], lr: floa
                 policy.W2[:, di2] -= gval * h
                 dh = gval * (policy.W2[:, di2] * (1 - h * h))
                 policy.b1 -= dh * 0.25
-                nb = int(_PAIR_NEIGH[idx])
-                base_pf = cf[cell_idx]; nf = cf[nb] if 0 <= nb < CELL_N else np.zeros(CELL_F)
-                pv = np.concatenate((base_pf, nf))
-                policy.W1 -= np.outer(pv, dh)
+                policy.W1 -= np.outer(pf[idx], dh)
         policy.b2 -= d_out.sum(axis=0) * 0.25
         for arr in (policy.W1, policy.W2, policy.Wprior, policy.b1, policy.b2):
             np.nan_to_num(arr, copy=False)
@@ -245,7 +267,7 @@ def shape_reward(result) -> float:
 
 def export_weights(policy: Policy, meta_extra: dict | None = None) -> dict:
     meta = {
-        "algo": "REINFORCE v4 pair-aware 20->32->4 + 73->4 prior (frozen LIF)",
+        "algo": ALGO,
         "arch": {"CF": CELL_F, "PF": PAIR_F, "H": CELL_H, "C": CELL_N, "D": DIR_N, "F": FEAT_DIM},
         "seed": policy.seed,
         **(meta_extra or {}),

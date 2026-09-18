@@ -34,14 +34,14 @@ from flycrush_py.board import (  # noqa: E402
     reshuffle, score_for_match,
 )
 from flycrush_py.data import load_json  # noqa: E402
-from flycrush_py.lif import create_network, decode_motor, reward_drive, step_network  # noqa: E402
+from flycrush_py.lif import create_network, decode_motor, reset_network, reward_drive, step_network  # noqa: E402
 from flycrush_py.rl import (  # noqa: E402
-    cell_features, create_policy, export_weights, extract_features,
-    import_weights, policy_act, reinforce_update, shape_reward,
+    create_policy, export_weights, extract_features,
+    import_weights, pair_features, policy_act, reinforce_update, shape_reward,
 )
 from flycrush_py.data import data_dir  # noqa: E402
 
-EPS_START, EPS_END, EPS_DECAY_N = 0.30, 0.08, 300  # exploration schedule: curious baby -> focused player
+EPS_START, EPS_END, EPS_DECAY_N = 0.15, 0.06, 300  # pretrained brain: light exploration from boot
 from flycrush_py.sensory import Eye  # noqa: E402
 
 W, H = 1120, 740
@@ -207,16 +207,19 @@ class Game:
     # ---------------- brain ----------------
     def brain_decide(self):
         try:
+            # fresh perception per move (matches training: reset state, 4 LIF steps)
+            self.eye.reset()
+            reset_network(self.net)
             vec, _ = self.eye.observe(self.board)
             for _ in range(4):
                 step_network(self.net, vec, self.pam_drive)
             self.pam_drive *= 0.88
             dec = decode_motor(self.net)
             feat = extract_features(vec, dec, self.net.pam_hz)
-            cf = cell_features(self.board)
+            pf = pair_features(self.board)
             self.eps = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - self.updates / EPS_DECAY_N)
-            act = policy_act(self.policy, feat, cf, self.rng, epsilon=self.eps)
-            self._last_step = {"feat": feat, "cf": cf, "cell": act["cell"], "di": act["di"]}
+            act = policy_act(self.policy, feat, pf, self.rng, epsilon=self.eps)
+            self._last_step = {"feat": feat, "pf": pf, "cell": act["cell"], "di": act["di"]}
             self.dec = {"L": act["cell"] % 8, "R": act["cell"] // 8, "gate": act["gate"],
                         "dir": act["dir"], "dirs": dec["dirs"]}
             self.active = 900 + int((act["gate"] or 0) * 360)
@@ -377,7 +380,7 @@ class Game:
             gained = self.score - self.score_at_start
             r = shape_reward({"ok": gained > 0, "score": gained})
             self.baseline += 0.05 * (r - self.baseline)
-            reinforce_update(self.policy, st["feat"], st["cf"], st["cell"], st["di"],
+            reinforce_update(self.policy, st["feat"], st["pf"], st["cell"], st["di"],
                              r - self.baseline, 0.05)
             self.hist.append(r)
             if len(self.hist) > 600:

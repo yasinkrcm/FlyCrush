@@ -59,13 +59,16 @@ Keyboard shortcuts: `SPACE` play/pause · `N` step · `M` manual (click two cand
 
 ## Training pipeline
 
-The shipped brain (`public/data/readout-weights.json`) is a **v4 pair-aware readout**
-(20→32→4 swap scorer + 73→4 direction prior), pretrained by supervised imitation on
-planner-labeled valid swaps, then refined online while it plays.
+The shipped brain (`public/data/readout-weights.json`) is a **v5 cross-aware readout**
+(25→32→4 swap scorer + 73→4 direction prior). Its "eyes" compare the color of each moving
+tile against the tiles around where it would land — raw board sensing that makes swap
+validity physically observable, no game-rule oracle. It is pretrained by supervised
+imitation on planner-labeled valid swaps, then finetuned with online REINFORCE
+(match score = dopamine), and keeps learning live while it plays.
 
 ```bash
-# supervised pretrain (writes readout-weights.json + patches the report)
-./.venv/bin/python -m flycrush_py.supervised_train --boards 8000 --epochs 12
+# supervised pretrain + REINFORCE finetune (writes readout-weights.json + patches the report)
+./.venv/bin/python -m flycrush_py.supervised_train --boards 8000 --epochs 12 --rl-episodes 800
 
 # re-evaluate the CURRENT weights and regenerate training-report.json
 ./.venv/bin/python -m flycrush_py.evaluate
@@ -92,9 +95,10 @@ with eps=0.05 exploration during eval rollouts.
 | `supervised.hit120` | fraction of boards where a single greedy move forms a match |
 | `supervised.avgScore120` | avg points of that single greedy move |
 
-Honest by design: the report includes a negative control. Search-based planners beat the
-readout — that is the point. The readout earns its label because every one of its decisions
-flows through the frozen eye→LIF→readout pipeline with no oracle features.
+Honest by design: the report includes a negative control. The readout outplays the
+first-found-move planner, but uniform random *valid* play and the best-of-search oracle
+still score higher — search power remains real. The readout earns its label because every
+one of its decisions flows through the frozen eye→LIF→readout pipeline with no oracle features.
 
 ## Persistence
 
@@ -120,4 +124,7 @@ deployment that matters.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[PolyForm Noncommercial 1.0.0](LICENSE) — free for everyone to use, study, modify, and
+share for **noncommercial purposes** (personal projects, research, education, hobby).
+Selling the software or using it commercially requires a separate license from the
+author. In short: *kullanmak serbest, satmak yasak.*

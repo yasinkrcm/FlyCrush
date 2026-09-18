@@ -127,46 +127,69 @@ class TestLif(unittest.TestCase):
 class TestRL(unittest.TestCase):
     def test_features(self):
         b = B.create_board(3)
-        cf = R.cell_features(b)
-        self.assertEqual(cf.shape, (64, 10))
-        self.assertTrue(((cf >= 0) & (cf <= 1)).all())
+        pf = R.pair_features(b)
+        self.assertEqual(pf.shape, (R.ACT_N, R.PAIR_F))
+        self.assertTrue(((pf >= 0) & (pf <= 1)).all())
+        # invalid (edge-masked) pairs must stay all-zero
+        self.assertTrue((pf[~R._PAIR_MASK] == 0).all())
         f = R.extract_features(np.zeros(48), {"col_acts": [0] * 8, "row_acts": [0] * 8,
                                               "dirs": {"up": 0, "down": 0, "left": 0, "right": 0}, "gate": 0}, 0)
         self.assertEqual(f.shape, (73,))
 
+    def test_features_determine_validity(self):
+        # the 22-dim swap perception must separate valid from invalid swaps:
+        # identical feature vectors must always have identical validity
+        self._seen = {}
+        mism = 0
+        for seed in range(40):
+            b = B.create_board(1000 + seed)
+            pf = R.pair_features(b)
+            rng = B.Rng(seed)
+            for cell in range(64):
+                for di, d in enumerate(B.DIRS):
+                    idx = cell * 4 + di
+                    if not R._PAIR_MASK[idx]:
+                        continue
+                    ok = B.try_action(b, cell, d, rng)["ok"]
+                    pf_key = pf[idx].tobytes()
+                    seen = self._seen.setdefault(pf_key, ok)
+                    if seen != ok:
+                        mism += 1
+        self.assertEqual(mism, 0)
+
     def test_update_direction(self):
         p = R.create_policy(2)
         feat = np.full(73, 0.2)
-        cf = np.full((64, 10), 0.1)
-        _, before, _ = R.forward(p, feat, cf)
-        R.reinforce_update(p, feat, cf, 37, 1, +1.0, 0.5)
-        _, after, _ = R.forward(p, feat, cf)
+        pf = R.pair_features(B.create_board(5))
+        _, before, _ = R.forward(p, feat, pf)
+        R.reinforce_update(p, feat, pf, 37, 1, +1.0, 0.5)
+        _, after, _ = R.forward(p, feat, pf)
         self.assertGreater(after[37 * 4 + 1], before[37 * 4 + 1])
 
     def test_bandit_converges(self):
         p = R.create_policy(4)
         rng = B.Rng(11)
-        cf = np.zeros((64, 10))
+        pf = R.pair_features(B.create_board(7))
         for t in range(600):
             ctx = t % 2
             feat = np.zeros(73)
             feat[ctx] = 1.0
-            a = R.policy_act(p, feat, cf, rng, epsilon=0.15)
+            a = R.policy_act(p, feat, pf, rng, epsilon=0.15)
             good = (ctx == 0 and a["di"] == 0) or (ctx == 1 and a["di"] == 3)
-            R.reinforce_update(p, feat, cf, a["cell"], a["di"], 1.0 if good else -0.2, 0.1)
+            R.reinforce_update(p, feat, pf, a["cell"], a["di"], 1.0 if good else -0.2, 0.1)
         for ctx, want in ((0, 0), (1, 3)):
             feat = np.zeros(73)
             feat[ctx] = 1.0
-            a = R.policy_act(p, feat, cf, rng, greedy=True)
+            a = R.policy_act(p, feat, pf, rng, greedy=True)
             self.assertEqual(a["di"], want)
 
     def test_masking(self):
         p = R.create_policy(6)
         rng = B.Rng(21)
         feat = np.full(73, 0.1)
-        cf = R.cell_features(B.create_board(31))
+        pf = R.pair_features(B.create_board(31))
         for _ in range(300):
-            a = R.policy_act(p, feat, cf, rng, epsilon=0.3)
+            a = R.policy_act(p, feat, pf, rng, epsilon=0.3)
             self.assertTrue(B.valid_dirs(a["cell"])[a["dir"]])
 
     def test_weights_roundtrip_and_reject(self):

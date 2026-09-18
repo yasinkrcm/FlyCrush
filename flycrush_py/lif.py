@@ -105,6 +105,25 @@ def create_network(subset: dict) -> Net:
     return net
 
 
+def reset_network(net: Net) -> None:
+    """Clear dynamic state (membrane, refractory, rates) — wiring untouched.
+
+    Live play calls this before every decision so perception always matches
+    the training regime: fresh eye + 4 LIF steps on the current board.
+    """
+    try:
+        if net.n:
+            net.v[:] = 0.0
+            net.ref[:] = 0.0
+            net.spikes[:] = 0
+            net.rate[:] = 0.0
+            net.prev_spike[:] = False
+        net.pam_hz = 0.0
+        net.tick = 0
+    except Exception:
+        pass
+
+
 def step_network(net: Net, vec: np.ndarray, pam_drive: float = 0.0) -> int:
     """One fixed LIF step. Returns spike count. NaN-proof."""
     try:

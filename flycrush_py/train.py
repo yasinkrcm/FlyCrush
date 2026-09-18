@@ -21,10 +21,10 @@ from flycrush_py.board import (  # noqa: E402
     DIRS, Rng, create_board, find_valid_move, reshuffle, try_action,
 )
 from flycrush_py.data import data_dir, load_json  # noqa: E402
-from flycrush_py.lif import create_network, decode_motor, reward_drive, step_network  # noqa: E402
+from flycrush_py.lif import create_network, decode_motor, reset_network, reward_drive, step_network  # noqa: E402
 from flycrush_py.rl import (  # noqa: E402
-    DEFAULT_LR, cell_features, create_policy, export_weights,
-    extract_features, policy_act, reinforce_update, shape_reward,
+    DEFAULT_LR, create_policy, export_weights,
+    extract_features, pair_features, policy_act, reinforce_update, shape_reward,
 )
 from flycrush_py.sensory import Eye  # noqa: E402
 
@@ -39,20 +39,21 @@ def play_episode(subset, policy, board_seed: int, train: bool, rng: Rng, baselin
     for m in range(MOVES):
         if not find_valid_move(board):
             board = reshuffle(board, board_seed + m)["board"]
-            eye.reset()
+        eye.reset()
+        reset_network(net)
         vec, _ = eye.observe(board)
         for _ in range(LIF_STEPS):
             step_network(net, vec, pam_drive)
             pam_drive *= 0.9
         dec = decode_motor(net)
         feat = extract_features(vec, dec, net.pam_hz)
-        cf = cell_features(board)
+        pf = pair_features(board)
         if train:
-            act = policy_act(policy, feat, cf, rng, epsilon=EPS)
+            act = policy_act(policy, feat, pf, rng, epsilon=EPS)
         elif eval_eps > 0:
-            act = policy_act(policy, feat, cf, rng, epsilon=eval_eps)
+            act = policy_act(policy, feat, pf, rng, epsilon=eval_eps)
         else:
-            act = policy_act(policy, feat, cf, rng, greedy=True)
+            act = policy_act(policy, feat, pf, rng, greedy=True)
         res = try_action(board, act["cell"], act["dir"], refill)
         if res["ok"]:
             board = res["board"]
@@ -62,7 +63,7 @@ def play_episode(subset, policy, board_seed: int, train: bool, rng: Rng, baselin
         r = shape_reward(res)
         if train:
             baseline[0] += 0.05 * (r - baseline[0])
-            reinforce_update(policy, feat, cf, act["cell"], act["di"], r - baseline[0], DEFAULT_LR)
+            reinforce_update(policy, feat, pf, act["cell"], act["di"], r - baseline[0], DEFAULT_LR)
     return total, matches
 
 

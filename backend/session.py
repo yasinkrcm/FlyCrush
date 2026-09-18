@@ -16,14 +16,14 @@ from flycrush_py.board import (
 from flycrush_py.data import load_json
 from flycrush_py.db import AsyncDb, load_boot_policy, maybe_autosave, save_readout
 from flycrush_py.rl import (
-    cell_features, create_policy, export_weights, extract_features,
-    import_weights, policy_act, reinforce_update, shape_reward,
+    create_policy, export_weights, extract_features,
+    import_weights, pair_features, policy_act, reinforce_update, shape_reward,
 )
-from flycrush_py.lif import create_network, decode_motor, reward_drive, step_network
+from flycrush_py.lif import create_network, decode_motor, reset_network, reward_drive, step_network
 from flycrush_py.sensory import Eye
 
 CELL_PX = 62
-EPS_START, EPS_END, EPS_DECAY_N = 0.30, 0.08, 300
+EPS_START, EPS_END, EPS_DECAY_N = 0.15, 0.06, 300  # pretrained brain: light exploration from boot
 WORDS = {1: "Sweet!", 2: "Tasty!", 3: "Divine!", 4: "Sugar Crush!"}
 _DV = {"up": (-1, 0), "down": (1, 0), "left": (0, -1), "right": (0, 1)}
 
@@ -195,6 +195,9 @@ class Session:
     # ---------- brain ----------
     def decide(self):
         try:
+            # fresh perception per move (matches training: reset state, 4 LIF steps)
+            self.eye.reset()
+            reset_network(self.net)
             vec, _ = self.eye.observe(self.board)
             so = sd = sp = sm = 0
             for _ in range(4):
@@ -216,10 +219,10 @@ class Session:
             self._last_in_energy = round(float(abs(vec).sum()), 2)
             dec = decode_motor(self.net)
             feat = extract_features(vec, dec, self.net.pam_hz)
-            cf = cell_features(self.board)
+            pf = pair_features(self.board)
             self.eps = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - self.updates / EPS_DECAY_N)
-            act = policy_act(self.policy, feat, cf, self.rng, epsilon=self.eps)
-            self._transition = {"feat": feat, "cf": cf, "cell": act["cell"], "di": act["di"]}
+            act = policy_act(self.policy, feat, pf, self.rng, epsilon=self.eps)
+            self._transition = {"feat": feat, "pf": pf, "cell": act["cell"], "di": act["di"]}
             self.dec = {"L": act["cell"] % 8, "R": act["cell"] // 8, "gate": act["gate"],
                         "dir": act["dir"], "dirs": dec["dirs"]}
             self.active = 900 + int((act["gate"] or 0) * 360)
@@ -238,7 +241,7 @@ class Session:
             with self.train_lock:
                 self.baseline += 0.05 * (r - self.baseline)
                 from flycrush_py.rl import reinforce_update
-                reinforce_update(self.policy, st["feat"], st["cf"], st["cell"], st["di"],
+                reinforce_update(self.policy, st["feat"], st["pf"], st["cell"], st["di"],
                                  r - self.baseline, 0.05)
                 self.hist.append(r)
                 if len(self.hist) > 600:
@@ -450,24 +453,25 @@ class Session:
                 for m in range(25):
                     if not find_valid_move(board):
                         board = reshuffle(board, e * 131 + m)["board"]
-                        eye.reset()
+                    eye.reset()
+                    reset_network(net)
                     vec, _ = eye.observe(board)
                     for _ in range(4):
                         step_network(net, vec, pam)
                         pam *= 0.9
                     dec = decode_motor(net)
                     feat = extract_features(vec, dec, net.pam_hz)
-                    cf = cell_features(board)
+                    pf = pair_features(board)
                     with self.train_lock:
                         self.eps = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - self.updates / EPS_DECAY_N)
-                        act = policy_act(self.policy, feat, cf, self.rng, epsilon=self.eps)
+                        act = policy_act(self.policy, feat, pf, self.rng, epsilon=self.eps)
                         res = try_action(board, act["cell"], act["dir"], self.rng)
                         r = shape_reward(res)
                         if res["ok"]:
                             board = res["board"]
                             total += res["score"]
                         self.baseline += 0.05 * (r - self.baseline)
-                        reinforce_update(self.policy, feat, cf, act["cell"], act["di"],
+                        reinforce_update(self.policy, feat, pf, act["cell"], act["di"],
                                          r - self.baseline, 0.05)
                         self.hist.append(r)
                         if len(self.hist) > 600:
