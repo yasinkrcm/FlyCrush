@@ -4,7 +4,8 @@ import {
 } from 'lucide-react';
 import { useController } from './useFly';
 import { GameCanvas } from './components/GameCanvas';
-import { Brain3D } from './components/Brain3D';
+import { BrainCard } from './components/BrainCard';
+import { Attribution } from './components/Attribution';
 import {
   CnsPanel, CurvePanel, DopaPanel, EvalPanel, FlyAvatar, FlyCam,
   Inspector, MoveFeed, RejectedPanel, StatBadges,
@@ -93,12 +94,7 @@ export default function App() {
             <DopaPanel s={s} />
             <FlyCam board={s?.board ?? null} />
           </div>
-          <div className="card">
-            <div className="card-h">
-              <span className="card-t"><Brain size={14} /> Brain · MaleCNS view</span>
-            </div>
-            <Brain3D subset={ctl.subset} rates={s?.rates} />
-          </div>
+          <BrainCard subset={ctl.subset} rates={s?.rates} />
           <RejectedPanel s={s} />
           <CurvePanel s={s} />
           <Inspector s={s} subset={ctl.subset} />
@@ -109,8 +105,8 @@ export default function App() {
         <span>{ctl.status}</span>
         <span className="dim">deterministic REINFORCE readout · frozen LIF wiring · no search in the decision path</span>
         <span className="dim">
-          brain viewer pattern: <a href="https://github.com/cobanov/fly-connectome-template" target="_blank" rel="noreferrer">fly-connectome-template</a> ·
-          list: <a href="https://github.com/cobanov/awesome-fly" target="_blank" rel="noreferrer">awesome-fly</a>
+          <Attribution /> · credits:{' '}
+          <a href="https://male-cns.janelia.org/" target="_blank" rel="noreferrer">MaleCNS CC BY 4.0</a>
         </span>
       </footer>
     </div>

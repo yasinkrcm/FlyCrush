@@ -27,8 +27,11 @@ public/data/       baked artifacts: connectome subset, readout weights, training
 scripts/           Node bakes that generate the connectome subset / v3 weights
 ```
 
-One process serves everything: `backend/server.py` hosts the JSON API and, if `web/dist/`
-exists, the built React app on the same origin.
+One process serves everything: `backend/server.py` hosts the JSON API, a WebSocket
+push channel (`/ws` — snapshots are pushed, no polling; commands travel both ways
+with automatic HTTP fallback), and, if `web/dist/` exists, the built React app on
+the same origin. Socket writes happen outside the game lock and client sockets are
+time-bounded, so one stalled browser can never freeze the server.
 
 ## Quickstart (local)
 
@@ -118,9 +121,9 @@ deployment that matters.
 
 ## Credits
 
-- [cobanov/fly-connectome-template](https://github.com/cobanov/fly-connectome-template) — brain viewer pattern
+- **Built with [fly-connectome-template](https://github.com/cobanov/fly-connectome-template) by [Mert Cobanov](https://github.com/cobanov)** — real MaleCNS anatomy view + template license (see [web/public/TEMPLATE-LICENSE.txt](web/public/TEMPLATE-LICENSE.txt))
 - [cobanov/awesome-fly](https://github.com/cobanov/awesome-fly) — fly neuroresources list
-- Connectome concept inspired by FlyEM/HHMI MaleCNS (CC BY 4.0) — all shipped data is synthetic
+- Connectome concept inspired by FlyEM/HHMI MaleCNS (CC BY 4.0) — the shipped *game* brain is synthetic; the atlas view uses the real MaleCNS v1.0 soma dataset (see [web/public/data/brain-atlas/NOTICE.md](web/public/data/brain-atlas/NOTICE.md))
 
 ## License
 

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { ws } from './api';
 import { FlyController } from './controller';
 
 // Single shared controller (module singleton: one brain connection per page).
@@ -30,7 +31,8 @@ export function useController(): FlyController {
     const unsub = ctl.subscribe(() => bump((n) => n + 1));
     void ctl.boot();
     const poll = setInterval(() => {
-      void ctl.poll();
+      // state arrives via WS push; HTTP poll is only the fallback when it's down
+      if (!ws.open) void ctl.poll();
       try {
         localStorage.setItem(UI_KEY, JSON.stringify({
           playing: ctl.playing, speedMul: ctl.speedMul, manual: ctl.manual,

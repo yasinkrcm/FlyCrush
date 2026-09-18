@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""FLYCRUSH backend: stdlib-only HTTP server (no pip dependencies).
+"""FLYCRUSH backend: stdlib-only HTTP + WebSocket server (no pip dependencies).
 
-Serves frontend/ + public/data/* statically and a JSON game API:
+Serves web/dist + public/data/* statically, a JSON game API, and a WebSocket
+push channel at /ws (RFC 6455):
 
     GET  /api/state            full snapshot (board, stats, panels, curve)
     POST /api/fly_step         brain decides + applies + learns (animated steps out)
@@ -9,6 +10,15 @@ Serves frontend/ + public/data/* statically and a JSON game API:
     POST /api/new_game         {moves?, from_scratch?}
     POST /api/save              persist trained readout to readout-weights.json
     GET  /api/report           baked training-report.json (or {})
+    GET  /ws   (upgrade)       bidirectional game channel:
+                               client -> {type: state|step|move|new|turbo|save, id, ...}
+                               server -> {id, ok, data} replies
+                                          + {type:"snapshot", data} pushes
+
+Concurrency contract: every socket write happens OUTSIDE LOCK, and plain HTTP
+client sockets carry a 20s timeout (upgraded WS sockets are exempt — they are
+kept alive by server pings). A stalled browser can therefore never freeze the
+game loop for everyone else (root cause of the 2026-09-18 outage).
 
 Run:
     ./.venv/bin/python -m backend.server [--port 8000] [--moves 25] [--from-scratch]
@@ -17,11 +27,15 @@ Then open http://localhost:8000/
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
 import json
 import mimetypes
 import os
+import struct
 import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -45,6 +59,138 @@ _NOBUILD = b"""<!doctype html><meta charset="utf-8"><title>FlyCrush</title>
 SESSION = Session()
 LOCK = threading.Lock()
 
+# ---------------- websocket plumbing (RFC 6455, server side) ----------------
+
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+
+class WsClient:
+    __slots__ = ("handler", "send_lock", "alive")
+
+    def __init__(self, handler):
+        self.handler = handler
+        self.send_lock = threading.Lock()
+        self.alive = True
+
+
+WS_CLIENTS: set[WsClient] = set()
+WS_REG_LOCK = threading.Lock()
+
+
+def _ws_frame(opcode: int, payload: bytes) -> bytes:
+    n = len(payload)
+    if n < 126:
+        head = struct.pack("!BB", 0x80 | opcode, n)
+    elif n < 65536:
+        head = struct.pack("!BBH", 0x80 | opcode, 126, n)
+    else:
+        head = struct.pack("!BBQ", 0x80 | opcode, 127, n)
+    return head + payload
+
+
+def _ws_send_frame(client: WsClient, frame: bytes) -> None:
+    try:
+        with client.send_lock:
+            client.handler.wfile.write(frame)
+            client.handler.wfile.flush()
+    except Exception:
+        client.alive = False
+
+
+def _ws_send(client: WsClient, obj) -> None:
+    try:
+        _ws_send_frame(client, _ws_frame(1, json.dumps(obj).encode()))
+    except Exception:
+        client.alive = False
+
+
+def _ws_broadcast(obj) -> None:
+    try:
+        frame = _ws_frame(1, json.dumps(obj).encode())
+    except Exception:
+        return
+    with WS_REG_LOCK:
+        clients = list(WS_CLIENTS)
+    for client in clients:
+        _ws_send_frame(client, frame)
+
+
+# ---------------- game actions (LOCK inside, data out) ----------------
+
+def _h_state():
+    with LOCK:
+        return SESSION.snapshot()
+
+
+def _h_report():
+    try:
+        from flycrush_py.data import load_json
+        ok, rep = load_json("training-report.json")
+        return rep if ok else {}
+    except Exception:
+        return {}
+
+
+def _h_fly_step():
+    with LOCK:
+        return SESSION.fly_step()
+
+
+def _h_human_move(body):
+    with LOCK:
+        return SESSION.human_move(body.get("cell"), body.get("dir"))
+
+
+def _h_turbo(body):
+    try:
+        with LOCK:
+            return SESSION.start_turbo((body or {}).get("episodes", 200))
+    except Exception:
+        return {"ok": False, "reason": "turbo-failed"}
+
+
+def _h_new_game(body):
+    with LOCK:
+        try:
+            if body.get("from_scratch"):
+                from flycrush_py.rl import create_policy
+                SESSION.policy = create_policy(1337)
+                SESSION.prov = "random-init(from-scratch)"
+            SESSION.new_game(body.get("moves") or SESSION.moves_total)
+        except Exception:
+            pass
+        return SESSION.snapshot()
+
+
+def _h_save():
+    try:
+        with LOCK:
+            return SESSION.save()
+    except Exception:
+        return {"ok": False, "reason": "save-failed"}
+
+
+WS_ACTIONS = {
+    "state": lambda b: (_h_state(), False),
+    "step": lambda b: (_h_fly_step(), True),
+    "move": lambda b: (_h_human_move(b), True),
+    "new": lambda b: (_h_new_game(b), True),
+    "turbo": lambda b: (_h_turbo(b), True),
+    "save": lambda b: (_h_save(), True),
+}
+
+
+def _ws_dispatch(kind: str, req: dict):
+    action = WS_ACTIONS.get(kind)
+    if not action:
+        return None, False
+    try:
+        return action(req)
+    except Exception:
+        return None, False
+
+
+# ---------------- HTTP plumbing ----------------
 
 def _json(handler, obj, code=200):
     try:
@@ -82,7 +228,8 @@ def _file(handler, path):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "FlyCrush/1.0"
+    server_version = "FlyCrush/1.1"
+    timeout = 20  # bounds stalled-client socket ops; WS upgrades lift it below
 
     def log_message(self, *a):
         pass
@@ -96,9 +243,110 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    # ---- websocket ----
+
+    def _ws_handshake(self) -> bool:
+        key = self.headers.get("Sec-WebSocket-Key")
+        if not key or (self.headers.get("Upgrade") or "").lower() != "websocket":
+            return False
+        accept = base64.b64encode(hashlib.sha1((key + WS_GUID).encode()).digest()).decode()
+        self.send_response(101)
+        self.send_header("Upgrade", "websocket")
+        self.send_header("Connection", "Upgrade")
+        self.send_header("Sec-WebSocket-Accept", accept)
+        self.end_headers()
+        return True
+
+    def _ws_read_exact(self, n: int):
+        buf = b""
+        while len(buf) < n:
+            try:
+                chunk = self.rfile.read(n - len(buf))
+            except Exception:
+                return None
+            if not chunk:
+                return None
+            buf += chunk
+        return buf
+
+    def _ws_read_message(self):
+        head = self._ws_read_exact(2)
+        if head is None:
+            return None
+        opcode, b2 = head[0] & 0x0F, head[1]
+        masked = bool(b2 & 0x80)
+        length = b2 & 0x7F
+        if length == 126:
+            ext = self._ws_read_exact(2)
+            if ext is None:
+                return None
+            length = struct.unpack("!H", ext)[0]
+        elif length == 127:
+            ext = self._ws_read_exact(8)
+            if ext is None:
+                return None
+            length = struct.unpack("!Q", ext)[0]
+        if length > 65536:
+            return None
+        mask = b"\x00\x00\x00\x00"
+        if masked:
+            mask = self._ws_read_exact(4)
+            if mask is None:
+                return None
+        payload = self._ws_read_exact(length) if length else b""
+        if payload is None:
+            return None
+        if masked:
+            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        return opcode, payload
+
+    def _ws_loop(self):
+        self.connection.settimeout(None)  # long-lived channel; pings keep it alive
+        client = WsClient(self)
+        with WS_REG_LOCK:
+            WS_CLIENTS.add(client)
+        try:
+            _ws_send(client, {"type": "snapshot", "data": _h_state()})
+            while client.alive:
+                msg = self._ws_read_message()
+                if msg is None:
+                    break
+                opcode, payload = msg
+                if opcode == 8:  # close
+                    _ws_send_frame(client, _ws_frame(8, b""))
+                    break
+                if opcode == 9:  # ping -> pong
+                    _ws_send_frame(client, _ws_frame(10, payload))
+                    continue
+                if opcode != 1:
+                    continue
+                try:
+                    req = json.loads(payload.decode("utf-8") or "{}")
+                except Exception:
+                    req = {}
+                if not isinstance(req, dict):
+                    continue
+                rid = req.get("id")
+                data, changed = _ws_dispatch(str(req.get("type") or ""), req)
+                if rid is not None:
+                    _ws_send(client, {"id": rid, "ok": data is not None, "data": data})
+                if changed:
+                    _ws_broadcast({"type": "snapshot", "data": _h_state()})
+        finally:
+            with WS_REG_LOCK:
+                WS_CLIENTS.discard(client)
+            self.close_connection = True
+
+    # ---- HTTP ----
+
     def do_GET(self):
         try:
             p = self.path.split("?", 1)[0]
+            if p == "/ws":
+                if not self._ws_handshake():
+                    return _json(self, {"ok": False, "reason": "ws-upgrade-required"}, 400)
+                self._ws_loop()
+                return
             if p in ("/", "/index.html"):
                 if HAS_WEB:
                     return _file(self, os.path.join(WEBDIST, "index.html"))
@@ -116,21 +364,22 @@ class Handler(BaseHTTPRequestHandler):
                 if fp.startswith(WEBDIST) and os.path.isfile(fp):
                     return _file(self, fp)
                 return _json(self, {"ok": False, "reason": "not-found"}, 404)
+            if p.startswith("/data/") and HAS_WEB:
+                fp = os.path.normpath(os.path.join(WEBDIST, p.lstrip("/")))
+                if fp.startswith(WEBDIST) and os.path.isfile(fp):
+                    return _file(self, fp)
+                return _json(self, {"ok": False, "reason": "not-found"}, 404)
+            if p == "/TEMPLATE-LICENSE.txt" and HAS_WEB:
+                return _file(self, os.path.join(WEBDIST, "TEMPLATE-LICENSE.txt"))
             if p.startswith("/public/data/"):
                 name = os.path.basename(p)
                 if name in ("connectome-subset.json", "readout-weights.json", "training-report.json"):
                     return _file(self, os.path.join(PUBDATA, name))
                 return _json(self, {"ok": False, "reason": "not-found"}, 404)
             if p == "/api/state":
-                with LOCK:
-                    return _json(self, SESSION.snapshot())
+                return _json(self, _h_state())
             if p == "/api/report":
-                try:
-                    from flycrush_py.data import load_json
-                    ok, rep = load_json("training-report.json")
-                    return _json(self, rep if ok else {})
-                except Exception:
-                    return _json(self, {})
+                return _json(self, _h_report())
             return _json(self, {"ok": False, "reason": "not-found"}, 404)
         except Exception:
             return _json(self, {"ok": False, "reason": "server-error"}, 500)
@@ -139,35 +388,39 @@ class Handler(BaseHTTPRequestHandler):
         try:
             p = self.path.split("?", 1)[0]
             body = self._read_json()
-            with LOCK:
-                if p == "/api/fly_step":
-                    return _json(self, SESSION.fly_step())
-                if p == "/api/human_move":
-                    return _json(self, SESSION.human_move(body.get("cell"), body.get("dir")))
-                if p == "/api/turbo":
-                    try:
-                        return _json(self, SESSION.start_turbo((body or {}).get("episodes", 200)))
-                    except Exception:
-                        return _json(self, {"ok": False, "reason": "turbo-failed"})
-                if p == "/api/new_game":
-                    try:
-                        fs = bool(body.get("from_scratch"))
-                        if fs:
-                            from flycrush_py.rl import create_policy
-                            SESSION.policy = create_policy(1337)
-                            SESSION.prov = "random-init(from-scratch)"
-                        SESSION.new_game(body.get("moves") or SESSION.moves_total)
-                    except Exception:
-                        pass
-                    return _json(self, SESSION.snapshot())
-                if p == "/api/save":
-                    try:
-                        return _json(self, SESSION.save())
-                    except Exception:
-                        return _json(self, {"ok": False, "reason": "save-failed"})
+            if p == "/api/fly_step":
+                return _json(self, _h_fly_step())
+            if p == "/api/human_move":
+                return _json(self, _h_human_move(body))
+            if p == "/api/turbo":
+                return _json(self, _h_turbo(body))
+            if p == "/api/new_game":
+                return _json(self, _h_new_game(body))
+            if p == "/api/save":
+                return _json(self, _h_save())
             return _json(self, {"ok": False, "reason": "not-found"}, 404)
         except Exception:
             return _json(self, {"ok": False, "reason": "server-error"}, 500)
+
+
+def _ws_ticker():
+    """Push turbo progress while a job runs; ping clients to keep channels alive."""
+    last_ping = 0.0
+    while True:
+        time.sleep(1.5)
+        try:
+            with WS_REG_LOCK:
+                clients = list(WS_CLIENTS)
+            if not clients:
+                continue
+            if SESSION._job_snapshot().get("running"):
+                _ws_broadcast({"type": "snapshot", "data": _h_state()})
+            if time.time() - last_ping > 25:
+                for client in clients:
+                    _ws_send_frame(client, _ws_frame(9, b"hb"))
+                last_ping = time.time()
+        except Exception:
+            pass
 
 
 def main(argv=None):
@@ -179,8 +432,9 @@ def main(argv=None):
     args = ap.parse_args(argv)
     global SESSION
     SESSION = Session(moves=args.moves, from_scratch=args.from_scratch)
+    threading.Thread(target=_ws_ticker, daemon=True).start()
     srv = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"FLYCRUSH web: http://localhost:{args.port}/  (backend+frontend, offline, stdlib only)")
+    print(f"FLYCRUSH web: http://localhost:{args.port}/  (backend+frontend, http+ws, stdlib only)")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

@@ -8,6 +8,8 @@ export default defineConfig({
     proxy: {
       '/api': 'http://127.0.0.1:8000',
       '/public/data': 'http://127.0.0.1:8000',
+      '/ws': { target: 'http://127.0.0.1:8000', ws: true },
+      '/data': 'http://127.0.0.1:8000',
     },
   },
   build: { outDir: 'dist', sourcemap: false },

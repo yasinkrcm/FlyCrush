@@ -99,6 +99,63 @@ class TestAPI(unittest.TestCase):
             self.assertEqual(r.status, 200)
             self.assertIn("FLYCRUSH", r.read().decode().upper())
 
+    def test_slow_client_cannot_block(self):
+        """Regression (2026-09-18 outage): a stalled reader must not hold LOCK."""
+        import socket
+        import time
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as slow:
+            slow.sendall(b"GET /api/state HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n")
+            slow.recv(1)  # read one byte, then stall
+            t0 = time.time()
+            code, _ = _call("GET", "/api/state", port=self.port)
+            self.assertLess(time.time() - t0, 10, "stalled reader must not block the server")
+            self.assertEqual(code, 200)
+
+    def test_ws_state_roundtrip(self):
+        """WS handshake + a {type:'state'} command returns a snapshot frame."""
+        import base64
+        import os as _os
+        import socket
+        import struct
+
+        def readn(sk, n):
+            data = b""
+            while len(data) < n:
+                chunk = sk.recv(n - len(data))
+                if not chunk:
+                    raise AssertionError("connection closed")
+                data += chunk
+            return data
+
+        with socket.create_connection(("127.0.0.1", self.port), timeout=10) as sk:
+            key = base64.b64encode(_os.urandom(16)).decode()
+            sk.sendall((f"GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
+                        f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                        f"Sec-WebSocket-Version: 13\r\n\r\n").encode())
+            buf = b""
+            while b"\r\n\r\n" not in buf:
+                buf += sk.recv(4096)
+            self.assertIn(b"101", buf.split(b"\r\n")[0])
+            payload = json.dumps({"type": "state", "id": 7}).encode()
+            mask = _os.urandom(4)
+            masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            sk.sendall(bytes([0x81, 0x80 | len(payload)]) + mask + masked)
+            # the server pushes an initial snapshot first; keep reading until
+            # the actual reply to our id:7 command arrives
+            for _ in range(10):
+                head = readn(sk, 2)
+                self.assertEqual(head[0] & 0x0F, 1)  # text frame
+                ln = head[1] & 0x7F
+                if ln == 126:
+                    ln = struct.unpack("!H", readn(sk, 2))[0]
+                elif ln == 127:
+                    ln = struct.unpack("!Q", readn(sk, 8))[0]
+                msg = json.loads(readn(sk, ln))
+                if msg.get("id") == 7:
+                    break
+            self.assertEqual(msg["id"], 7)
+            self.assertIn("board", msg["data"])
+
 
 if __name__ == "__main__":
     unittest.main()

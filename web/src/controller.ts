@@ -1,6 +1,6 @@
-// Framework-free game controller: API + animation phase machine.
+// Framework-free game controller: game channel (WS, HTTP fallback) + animation phases.
 // React subscribes for panel state; the canvas loop reads refs directly.
-import { api, Snapshot, Step, Subset, Report } from './api';
+import { api, game, ws, Snapshot, Step, Subset, Report } from './api';
 import { CANDY } from './draw';
 
 export const CELL = 62;
@@ -75,7 +75,9 @@ export class FlyController {
   async boot() {
     this.subset = await api.subset();
     this.report = (await api.report()) || {};
-    const st = await api.state();
+    ws.onSnapshot((snap) => this.handlePush(snap));
+    ws.connect();
+    const st = await game.state();
     if (!st) {
       this.bootState = 'offline';
       this.setStatus('backend offline — start it with: python -m backend.server (see README)');
@@ -86,11 +88,23 @@ export class FlyController {
     this.setStatus(`brain: ${st.prov} · updates ${st.updates} · saved@${st.saved ?? 0} (postgres, auto)`);
   }
 
+  /** Server push (WS) — same semantics the old poll had: apply only while idle. */
+  handlePush(snap: Snapshot) {
+    if (this.phase !== 'idle') return;
+    this.applyPub(snap);
+    if (this.bootState !== 'online') {
+      this.bootState = 'online';
+      this.setStatus(`brain: ${snap.prov} · updates ${snap.updates}`);
+    }
+    const j = snap.job;
+    if (j && j.running) this.setStatus(`Turbo ${j.done}/${j.total} · avg ${j.avg.toFixed(0)} · curve warming up…`);
+  }
+
   async flyStep() {
     if (this.busy) return;
     this.busy = true;
     try {
-      const res = await api.flyStep();
+      const res = await game.flyStep();
       if (!res) { this.setStatus('backend offline'); return; }
       // NOTE: ok:false + reason:no-match is a NORMAL wrong move (animate it!),
       // only game-over / brain-error return early.
@@ -134,7 +148,7 @@ export class FlyController {
     if (this.busy || this.phase !== 'idle') return;
     this.busy = true;
     try {
-      const res = await api.humanMove(cell, dir);
+      const res = await game.humanMove(cell, dir);
       if (!res) { this.setStatus('backend offline'); return; }
       if (!res.ok && res.reason !== 'no-match') return;
       this.pendingFinal = res.board || null;
@@ -168,7 +182,7 @@ export class FlyController {
     if (this.busy) return;
     this.busy = true;
     try {
-      const res = await api.newGame(fromScratch);
+      const res = await game.newGame(fromScratch);
       if (!res) { this.setStatus('backend offline'); return; }
       this.applyPub(res);
       this.pendingFinal = null;
@@ -181,14 +195,14 @@ export class FlyController {
   }
 
   async turbo() {
-    const res = await api.turbo(200);
+    const res = await game.turbo(200);
     if (res && res.ok) this.setStatus('Turbo started · 200 episodes · ~1000 moves/s');
     else if (res && (res as { reason?: string }).reason === 'already-running') this.setStatus('Turbo already running');
     else this.setStatus('turbo failed');
   }
 
   async save() {
-    const res = await api.save();
+    const res = await game.save();
     this.setStatus(res && res.ok ? `brain saved · updates ${res.updates}` : 'save failed');
   }
 
