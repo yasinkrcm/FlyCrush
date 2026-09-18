@@ -14,6 +14,7 @@ fallback brain, game always runs.
 from __future__ import annotations
 
 import argparse
+import collections
 import math
 import os
 import sys
@@ -177,6 +178,9 @@ class Game:
         self.eps = EPS_START
         self.saved_updates = 0  # last update count persisted (autosave, no key needed)
         self.move_count, self.invalid_count = 0, 0
+        self._reject_ban = collections.deque(maxlen=12)
+        self._reject_streak = 0
+        self._pending_action = None
         self.hist = []
         self._last_step = None
         self.prov = "random-init"
@@ -218,7 +222,13 @@ class Game:
             feat = extract_features(vec, dec, self.net.pam_hz)
             pf = pair_features(self.board)
             self.eps = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - self.updates / EPS_DECAY_N)
-            act = policy_act(self.policy, feat, pf, self.rng, epsilon=self.eps)
+            # stuck-loop guard: recent rejected swaps are excluded from the
+            # policy distribution (mirrors backend/session.py)
+            eps_eff = min(0.30, self.eps + 0.05 * min(getattr(self, "_reject_streak", 0), 3))
+            banned = {c * 4 + d for c, d in getattr(self, "_reject_ban", ())} or None
+            act = policy_act(self.policy, feat, pf, self.rng, epsilon=eps_eff,
+                             avoid=banned)
+            self._pending_action = (act["cell"], act["di"])
             self._last_step = {"feat": feat, "pf": pf, "cell": act["cell"], "di": act["di"]}
             self.dec = {"L": act["cell"] % 8, "R": act["cell"] // 8, "gate": act["gate"],
                         "dir": act["dir"], "dirs": dec["dirs"]}
@@ -233,6 +243,7 @@ class Game:
         try:
             if (self.moves_left is not None and self.moves_left <= 0) or self.over or self.phase not in ("idle", "aim"):
                 return False
+            self._pending_action = (cell, {"up": 0, "down": 1, "left": 2, "right": 3}[direction])
             r1, c1 = divmod(cell, 8)
             d = _DV.get(direction)
             if d is None:
@@ -287,6 +298,10 @@ class Game:
                         self.board[r1 + d[0]][c1 + d[1]], self.board[r1][c1]
                     self.combo, self.chain = 1, 0
                     self.invalid_count += 1
+                    pending = getattr(self, "_pending_action", None)
+                    if pending:
+                        self._reject_ban.append(pending)
+                    self._reject_streak = min(99, getattr(self, "_reject_streak", 0) + 1)
                     # explicit REJECTION mark (red × at swap midpoint) so invalid
                     # can never be mistaken for approval
                     mx = BX + (2 * c1 + d[1]) / 2 * CELL + CELL / 2
@@ -303,6 +318,9 @@ class Game:
                     self._finish_move()
                 return
             removed = len(m)
+            if first:
+                self._reject_ban.clear()
+                self._reject_streak = 0
             pts = score_for_match(removed) * self.cascade
             self.score += pts
             self.combo = self.cascade

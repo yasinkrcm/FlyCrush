@@ -139,7 +139,10 @@ def create_policy(seed: int = 1337, rng: Rng | None = None) -> Policy:
     )
 
 def forward(policy: Policy, feat: np.ndarray, pf: np.ndarray):
-    prior = feat @ policy.Wprior  # 4
+    # prior (LIF decode) stays a bounded nudge: unbounded accumulation of
+    # Wprior during online REINFORCE once collapsed the whole distribution
+    # onto two favourite swaps (the "repeats the same move" bug).
+    prior = np.clip(feat @ policy.Wprior, -3.0, 3.0) * 0.5
     logits = np.full(ACT_N, -1e9)
     hid_cache = np.zeros((ACT_N, CELL_H))
     for cell in range(CELL_N):
@@ -166,15 +169,28 @@ def _sample(probs: np.ndarray, rng: Rng) -> int:
             return i
     return len(probs) - 1
 
-def policy_act(policy: Policy, feat, cf, rng: Rng, epsilon=0.05, greedy=False) -> dict:
+def policy_act(policy: Policy, feat, cf, rng: Rng, epsilon=0.05, greedy=False, avoid=None) -> dict:
+    """One decision. avoid = iterable of banned action indices (the recent
+    rejected swaps): they are removed from the distribution and it is
+    renormalised, so a reverted board can never re-loop failed moves while
+    every other preference of the policy is preserved."""
     _, probs, _ = forward(policy, feat, cf)
+    banned = set(avoid) if avoid else ()
+    if banned:
+        probs = probs.copy()
+        for a in banned:
+            if 0 <= a < ACT_N:
+                probs[a] = 0.0
+        s = probs.sum()
+        if s > 0:
+            probs /= s
     if greedy:
         masked = np.where(_PAIR_MASK, probs, -1.0)
         pair = int(masked.argmax())
     elif rng.random() < epsilon:
         while True:
             pair = rng.randint(ACT_N)
-            if _PAIR_MASK[pair]:
+            if _PAIR_MASK[pair] and pair not in banned:
                 break
     else:
         pair = _sample(probs, rng)
@@ -188,7 +204,7 @@ def reinforce_update(policy: Policy, feat, pf, cell: int, di: int, adv: float, l
     try:
         _, probs, hid_cache = forward(policy, feat, pf)
         sel = cell * 4 + di
-        k = lr * adv
+        k = lr * max(-1.0, min(1.0, adv))  # bounded advantage: no reward-spike blowups
         onehot = np.zeros(ACT_N)
         onehot[sel] = 1.0
         g = (onehot - probs) * k
@@ -258,10 +274,13 @@ def supervised_update(policy: Policy, feat, pf, valid_pairs: list[int], lr: floa
         return 0.0
 
 def shape_reward(result) -> float:
+    """Dopamine: valid match -> score/200 (max 3), invalid attempt -> -0.5.
+    The invalid penalty is large enough that insisting on a rejected swap is
+    clearly worse than exploring (bounded by the advantage clip anyway)."""
     try:
         if (result or {}).get("ok"):
             return min(3.0, (result.get("score") or 0) / 200.0)
-        return -0.05
+        return -0.5
     except Exception:
         return 0.0
 

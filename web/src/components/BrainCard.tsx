@@ -3,17 +3,18 @@ import { Brain } from 'lucide-react';
 import { loadAtlas, type Atlas } from '../lib/atlas';
 import type { ActivityFrame } from '../lib/replay';
 import { BrainScene } from './BrainScene';
+import { FlyScene } from './FlyScene';
 import { Brain3D } from './Brain3D';
 import type { Snapshot, Subset } from '../api';
 
-type Mode = 'live' | 'atlas';
+type Mode = 'atlas' | 'fly' | 'live';
 
 /** Brain card: live synthetic connectome (our LIF net) or the template's
  *  real MaleCNS anatomy, with our firing rates as an ILLUSTRATIVE overlay —
  *  synthetic neuron ids cannot map to real MaleCNS body ids 1:1, so a fixed
  *  seeded assignment lights up real somata (descending first, then optic). */
 export function BrainCard({ subset, rates }: { subset: Subset | null; rates: Snapshot['rates'] | undefined }) {
-  const [mode, setMode] = useState<Mode>('live');
+  const [mode, setMode] = useState<Mode>('atlas');
   const [atlas, setAtlas] = useState<Atlas | null>(null);
   const [failed, setFailed] = useState(false);
   const tick = useRef(0);
@@ -58,21 +59,24 @@ export function BrainCard({ subset, rates }: { subset: Subset | null; rates: Sna
       <div className="card-h">
         <span className="card-t"><Brain size={14} /> Brain</span>
         <div className="bcard-modes">
-          <button aria-pressed={mode === 'live'} onClick={() => setMode('live')}>live · synthetic</button>
-          <button aria-pressed={mode === 'atlas'} onClick={() => setMode('atlas')}>MaleCNS · real anatomy</button>
+          <button aria-pressed={mode === 'atlas'} onClick={() => setMode('atlas')}>MaleCNS atlas</button>
+          <button aria-pressed={mode === 'fly'} onClick={() => setMode('fly')}>flybody 3D</button>
+          <button aria-pressed={mode === 'live'} onClick={() => setMode('live')}>live synthetic</button>
         </div>
       </div>
-      {mode === 'live' ? (
-        <Brain3D subset={subset} rates={rates} />
-      ) : atlas ? (
-        <>
-          <BrainScene atlas={atlas} frame={frame} />
-          <div className="dim small">illustrative overlay — synthetic fly activity on real MaleCNS somata (CC BY 4.0)</div>
-        </>
+      {mode === 'atlas' ? (
+        atlas ? (
+          <>
+            <BrainScene atlas={atlas} frame={frame} />
+            <div className="dim small">illustrative overlay — synthetic fly activity on real MaleCNS somata (CC BY 4.0)</div>
+          </>
+        ) : (
+          <div className="neural-load-flat" role="status">{failed ? 'atlas unavailable' : 'loading anatomy…'}</div>
+        )
+      ) : mode === 'fly' ? (
+        <FlyScene />
       ) : (
-        <div className="neural-load-flat" role="status">
-          {failed ? 'atlas unavailable' : 'loading anatomy…'}
-        </div>
+        <Brain3D subset={subset} rates={rates} />
       )}
     </div>
   );

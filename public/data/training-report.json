@@ -9,22 +9,22 @@
  "trained": "cross-aware pair-aware 25->32->4 swap scorer + linear 73->4 dir prior",
  "features": "raw cross-color equality counts: mover tile vs tiles around its landing spot (no valid-move oracle) + 73 global sensory/LIF features",
  "seed": 20260916,
- "initAvg120": 640.0,
+ "initAvg120": 581.3,
  "eval120": {
   "random": 418.3,
   "randomValid": 4646.3,
-  "trained": 3535.5,
-  "trainedMatchesPerGame": 17.21,
+  "trained": 3805.5,
+  "trainedMatchesPerGame": 18.21,
   "firstFoundPlanner": 3028.0
  },
  "oracle30": 22972.0,
  "supervised": {
-  "boards": 8000,
-  "epochs": 12,
+  "boards": 2000,
+  "epochs": 4,
   "lr": 0.08,
-  "hit120": 0.9,
-  "hit120Pct": 90.0,
-  "avgScore120": 122.5
+  "hit120": 0.908,
+  "hit120Pct": 90.8,
+  "avgScore120": 126.0
  },
  "units": {
   "evalMode": "eps=0.05 exploration during eval rollouts (matches train.py methodology)",
@@ -36,6 +36,6 @@
   "supervised.hit120": "fraction of 120 boards where one greedy move forms a match",
   "supervised.avgScore120": "avg points of that single greedy move"
  },
- "honestNote": "Reward = match score/200 (dopamine), invalid = -0.05. No oracle features; planner labels are used only as the supervised teaching signal, never as policy inputs. Perception is 25 raw cross-color equalities per swap \u2014 no game-rule oracle.",
+ "honestNote": "Reward = match score/200 (dopamine), invalid = -0.5 with a bounded advantage step. No oracle features; planner labels are used only as the supervised teaching signal, never as policy inputs. Perception is 25 raw cross-color equalities per swap.",
  "negativeControl": "The readout outplays the first-found-move planner, but uniform random valid play (which always knows a legal move) and the best-of-search oracle still score higher. Search power remains real; the readout earns its label: every decision flows eye->LIF->readout."
 }

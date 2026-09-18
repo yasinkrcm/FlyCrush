@@ -162,9 +162,9 @@ def main() -> int:
             "supervised.hit120": "fraction of 120 boards where one greedy move forms a match",
             "supervised.avgScore120": "avg points of that single greedy move",
         },
-        "honestNote": "Reward = match score/200 (dopamine), invalid = -0.05. No oracle features; "
-                      "planner labels are used only as the supervised teaching signal, never as policy inputs. "
-                      "Perception is 25 raw cross-color equalities per swap — no game-rule oracle.",
+        "honestNote": "Reward = match score/200 (dopamine), invalid = -0.5 with a bounded advantage step. "
+                      "No oracle features; planner labels are used only as the supervised teaching signal, "
+                      "never as policy inputs. Perception is 25 raw cross-color equalities per swap.",
         "negativeControl": "The readout outplays the first-found-move planner, but uniform random valid play "
                            "(which always knows a legal move) and the best-of-search oracle still score higher. "
                            "Search power remains real; the readout earns its label: every decision flows eye->LIF->readout.",

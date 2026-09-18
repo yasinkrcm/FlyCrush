@@ -6,6 +6,7 @@ The SAME math as flycrush_py.game, minus pygame. Thread-safe via external lock.
 """
 from __future__ import annotations
 
+import collections
 import threading
 import time
 
@@ -63,6 +64,9 @@ class Session:
             pass
         self._transition = None
         self._last_t = time.time()
+        self._last_reject = None      # (cell, di) of the last rejected swap
+        self._reject_streak = 0       # consecutive invalid moves (drives escalation)
+        self._reject_ban = collections.deque(maxlen=None)  # tried-and-failed swaps on the CURRENT board
         self._job_lock = threading.Lock()
         self.train_lock = threading.Lock()  # serializes policy/updates writers (live + turbo)
         self._job = {"running": False, "done": 0, "total": 0, "avg": 0.0, "curve": []}
@@ -120,6 +124,9 @@ class Session:
         self.over = False
         self.eye.reset()
         self._transition = None
+        self._last_reject = None
+        self._reject_streak = 0
+        self._reject_ban.clear()
         self._last_t = time.time()
         self._persist_game_state(force=True)
 
@@ -221,13 +228,19 @@ class Session:
             feat = extract_features(vec, dec, self.net.pam_hz)
             pf = pair_features(self.board)
             self.eps = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - self.updates / EPS_DECAY_N)
-            act = policy_act(self.policy, feat, pf, self.rng, epsilon=self.eps)
+            # stuck-loop guard: recent rejected swaps are excluded from the
+            # policy distribution (walk down the preference list instead of
+            # re-looping failures); mild exploration bump while losing.
+            eps_eff = min(0.30, self.eps + 0.05 * min(self._reject_streak, 3))
+            banned = {c * 4 + d for c, d in self._reject_ban} or None
+            act = policy_act(self.policy, feat, pf, self.rng, epsilon=eps_eff,
+                             avoid=banned)
             self._transition = {"feat": feat, "pf": pf, "cell": act["cell"], "di": act["di"]}
             self.dec = {"L": act["cell"] % 8, "R": act["cell"] // 8, "gate": act["gate"],
                         "dir": act["dir"], "dirs": dec["dirs"]}
             self.active = 900 + int((act["gate"] or 0) * 360)
             self.dopa = max(self.dopa, self.net.pam_hz or 0.0)
-            return {"cell": act["cell"], "dir": act["dir"], **self._dec_public()}
+            return {"cell": act["cell"], "dir": act["dir"], "di": act["di"], **self._dec_public()}
         except Exception:
             return None
 
@@ -241,8 +254,10 @@ class Session:
             with self.train_lock:
                 self.baseline += 0.05 * (r - self.baseline)
                 from flycrush_py.rl import reinforce_update
+                # gentler live step than offline training: long sessions must
+                # not degrade the calibrated policy into a collapsed one
                 reinforce_update(self.policy, st["feat"], st["pf"], st["cell"], st["di"],
-                                 r - self.baseline, 0.05)
+                                 r - self.baseline, 0.02)
                 self.hist.append(r)
                 if len(self.hist) > 600:
                     self.hist = self.hist[-600:]
@@ -365,6 +380,26 @@ class Session:
         if not dec:
             return {"ok": False, "reason": "brain-error"}
         res = self._apply_and_resolve(dec["cell"], dec["dir"], learn=True)
+        if res.get("valid"):
+            self._last_reject = None
+            self._reject_streak = 0
+            self._reject_ban.clear()
+        else:
+            self._last_reject = (dec["cell"], dec["di"])
+            self._reject_streak = min(99, self._reject_streak + 1)
+            self._reject_ban.append((dec["cell"], dec["di"]))
+            # frustration reshuffle: 8 straight rejections on one board -> new tiles
+            # (bounded stuck-loop; the game rule engine offers this shuffle itself)
+            if self._reject_streak >= 8 and find_valid_move(self.board):
+                self.board = reshuffle(self.board, int(time.time() * 1000) % 100000 or 1)["board"]
+                self.eye.reset()
+                reset_network(self.net)
+                self.say = "frustrated — fresh tiles!"
+                self._last_reject = None
+                self._reject_streak = 0
+                self._reject_ban.clear()
+                res = {"ok": True, "reshuffled": True, "valid": False, "reason": "frustration-reshuffle"}
+                res.update(self._pub())
         res["decision"] = dec
         self._persist_game_state()
         res.update(self._pub())
@@ -450,6 +485,7 @@ class Session:
                 board = create_board(self.rng.randint(1 << 30) or 1)
                 eye, net, pam = Eye(), create_network(self.subset), 0.0
                 total = 0
+                ban, streak = collections.deque(maxlen=12), 0
                 for m in range(25):
                     if not find_valid_move(board):
                         board = reshuffle(board, e * 131 + m)["board"]
@@ -464,12 +500,20 @@ class Session:
                     pf = pair_features(board)
                     with self.train_lock:
                         self.eps = EPS_END + (EPS_START - EPS_END) * max(0.0, 1.0 - self.updates / EPS_DECAY_N)
-                        act = policy_act(self.policy, feat, pf, self.rng, epsilon=self.eps)
+                        eps_eff = min(0.30, self.eps + 0.05 * min(streak, 3))
+                        banned = {c * 4 + d for c, d in ban} or None
+                        act = policy_act(self.policy, feat, pf, self.rng, epsilon=eps_eff,
+                                         avoid=banned)
                         res = try_action(board, act["cell"], act["dir"], self.rng)
                         r = shape_reward(res)
                         if res["ok"]:
                             board = res["board"]
                             total += res["score"]
+                            ban.clear()
+                            streak = 0
+                        else:
+                            ban.append((act["cell"], act["di"]))
+                            streak = min(99, streak + 1)
                         self.baseline += 0.05 * (r - self.baseline)
                         reinforce_update(self.policy, feat, pf, act["cell"], act["di"],
                                          r - self.baseline, 0.05)

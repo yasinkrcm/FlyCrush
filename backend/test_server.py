@@ -136,23 +136,41 @@ class TestAPI(unittest.TestCase):
             while b"\r\n\r\n" not in buf:
                 buf += sk.recv(4096)
             self.assertIn(b"101", buf.split(b"\r\n")[0])
+            # bytes after the handshake may already contain the first frame
+            leftover = {"buf": buf.split(b"\r\n\r\n", 1)[1]}
+
+            def readn(sk, n):
+                data = leftover["buf"]
+                while len(data) < n:
+                    chunk = sk.recv(n - len(data))
+                    if not chunk:
+                        raise AssertionError("connection closed")
+                    data += chunk
+                leftover["buf"] = data[n:]
+                return data[:n]
+
             payload = json.dumps({"type": "state", "id": 7}).encode()
             mask = _os.urandom(4)
             masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
             sk.sendall(bytes([0x81, 0x80 | len(payload)]) + mask + masked)
             # the server pushes an initial snapshot first; keep reading until
             # the actual reply to our id:7 command arrives
+            msg = None
             for _ in range(10):
                 head = readn(sk, 2)
-                self.assertEqual(head[0] & 0x0F, 1)  # text frame
+                self.assertIn(head[0] & 0x0F, (1, 9))  # text or ping
                 ln = head[1] & 0x7F
                 if ln == 126:
                     ln = struct.unpack("!H", readn(sk, 2))[0]
                 elif ln == 127:
                     ln = struct.unpack("!Q", readn(sk, 8))[0]
+                if head[0] & 0x0F == 9:
+                    readn(sk, ln)  # ping payload (server frames are unmasked)
+                    continue
                 msg = json.loads(readn(sk, ln))
                 if msg.get("id") == 7:
                     break
+            self.assertIsNotNone(msg)
             self.assertEqual(msg["id"], 7)
             self.assertIn("board", msg["data"])
 
